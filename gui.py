@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 ARCHIVERS = {
@@ -829,10 +829,20 @@ class MainWindow(QMainWindow):
         try:
             z = zipfile.ZipFile(io.BytesIO(res["data"]))
             base = os.path.dirname(os.path.abspath(sys.argv[0]))
-            for name in z.namelist():
-                parts = name.split("/")
-                if len(parts) > 1: parts = parts[1:]
-                else: continue
+            names = z.namelist()
+            # detect common root dir (GitHub zipballs have one, Compress-Archive doesn't)
+            roots = set()
+            for n in names:
+                parts = n.split("/")
+                if len(parts) > 1 and parts[0]: roots.add(parts[0])
+            skip_root = len(roots) == 1 and all(n.startswith(list(roots)[0] + "/") or n == list(roots)[0] + "/" for n in names)
+            for name in names:
+                if skip_root:
+                    parts = name.split("/")
+                    if len(parts) > 1: parts = parts[1:]
+                    else: continue
+                else:
+                    parts = name.split("/")
                 target = os.path.join(base, *parts)
                 if name.endswith("/"):
                     os.makedirs(target, exist_ok=True)

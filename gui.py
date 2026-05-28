@@ -1,6 +1,6 @@
 import os, sys, struct, math, time, random, json, zipfile, io, subprocess
 from datetime import datetime
-from urllib.request import urlopen, Request
+from urllib.request import urlopen, Request, HTTPError
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTreeWidget, QTreeWidgetItem, QSplitter,
@@ -216,6 +216,11 @@ class UpdateChecker(QThread):
             if not zip_url:
                 zip_url = data.get("zipball_url")
             self.finished.emit({"tag": tag, "url": html_url, "body": body, "zip_url": zip_url, "ok": True})
+        except HTTPError as e:
+            if e.code == 404:
+                self.finished.emit({"ok": False, "error": "Brak wydań na GitHub. Utwórz pierwszy release!"})
+            else:
+                self.finished.emit({"ok": False, "error": f"GitHub API: {e.code} {e.reason}"})
         except Exception as e:
             self.finished.emit({"ok": False, "error": str(e)})
 

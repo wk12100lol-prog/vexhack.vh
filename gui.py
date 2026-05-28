@@ -10,11 +10,11 @@ from PyQt6.QtWidgets import (
     QSlider, QButtonGroup, QRadioButton, QGroupBox, QFormLayout,
     QSpinBox, QDialogButtonBox
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF, QSize
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.5.0"
+VERSION = "2.6.0"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 ARCHIVERS = {
@@ -122,6 +122,7 @@ class UpdateDownloader(QThread):
 class ArchiveScanner(QThread):
     progress = pyqtSignal(int, str)
     found = pyqtSignal(str, int, str, str)
+    scanning = pyqtSignal(str)
     finished = pyqtSignal(int)
 
     def __init__(self, drives, excluded_dirs=None):
@@ -156,6 +157,7 @@ class ArchiveScanner(QThread):
         count = 0
         total_dirs = self._count_dirs()
         dirs_done = 0
+        update_interval = max(1, total_dirs // 200) if total_dirs > 0 else 50
         for drive in self.drives:
             if self._stop: break
             for root, dirs, files in os.walk(drive, topdown=True):
@@ -176,10 +178,56 @@ class ArchiveScanner(QThread):
                             except: pass
                 except: pass
                 dirs_done += 1
-                if total_dirs > 0 and dirs_done % 50 == 0:
-                    pct = min(99, int(dirs_done / total_dirs * 100))
+                if dirs_done % update_interval == 0:
+                    pct = min(99, int(dirs_done / total_dirs * 100)) if total_dirs > 0 else 0
                     self.progress.emit(pct, f"{drive}: {count} znalezionych ({dirs_done}/{total_dirs} katalogow)")
+                    self.scanning.emit(root)
         self.finished.emit(count)
+
+# ── STATS CHART ──
+
+class StatsChart(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data = []
+    def set_data(self, data):
+        self._data = data[:100]
+    def paintEvent(self, event):
+        if not self._data: return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        margin = 40
+        cw, ch = w - margin * 2, h - margin * 2
+        if cw < 10 or ch < 10: return
+
+        p.setPen(QColor(TEXT_DIM))
+        p.drawText(QRectF(0, 0, w, margin), Qt.AlignmentFlag.AlignCenter, f"Wspolczynnik kompresji ({len(self._data)} plikow)")
+
+        bars = min(len(self._data), 50)
+        bw = cw / bars
+        max_ratio = max(r for _, _, _, r, _ in self._data) or 1
+
+        for i in range(bars):
+            _, orig, comp, ratio, fmt = self._data[i]
+            bh = (ratio / max_ratio) * ch
+            x = margin + i * bw
+            y = margin + ch - bh
+            color = QColor(PINK if fmt == "CMP" else GREEN)
+            p.setBrush(QBrush(color))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRect(int(x), int(y), int(bw) - 1, int(bh))
+
+        # axis labels
+        p.setPen(QColor(TEXT_DIM))
+        p.drawLine(margin, margin, margin, margin + ch)
+        p.drawLine(margin, margin + ch, margin + cw, margin + ch)
+        p.drawText(QRectF(0, margin + ch - 10, margin - 4, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{max_ratio*100:.0f}%")
+        p.drawText(QRectF(0, margin + ch - 10, margin - 4, 20), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{max_ratio*100:.0f}%")
+        p.drawText(QRectF(margin, margin + ch + 4, cw, 20), Qt.AlignmentFlag.AlignCenter, f"Pliki ({bars})")
+
+    def minimumSizeHint(self):
+        return QSize(200, 150)
 
 # ── PARTICLES CANVAS ──
 
@@ -277,6 +325,15 @@ class MainWindow(QMainWindow):
         """)
         self._settings_btn.clicked.connect(self._show_settings)
         hl.addWidget(self._settings_btn)
+        self._about_btn = QPushButton("?")
+        self._about_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._about_btn.setFixedWidth(28)
+        self._about_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {TEXT_DIM}; border: 1px solid transparent; border-radius: 10px; padding: 2px; font-size: 13px; }}
+            QPushButton:hover {{ background: rgba(255,255,255,0.06); color: {GREEN}; }}
+        """)
+        self._about_btn.clicked.connect(self._show_about)
+        hl.addWidget(self._about_btn)
         self._update_btn = QPushButton("⬇ Sprawdz aktualizacje")
         self._update_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._update_btn.setStyleSheet(f"""
@@ -301,6 +358,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._build_repair_tab(), "Naprawa")
         self._tabs.addTab(self._build_compare_tab(), "Porownanie")
         self._tabs.addTab(self._build_scanner_tab(), "Skaner")
+        self._tabs.addTab(self._build_stats_tab(), "Statystyki")
         self._tabs.addTab(self._build_discord_tab(), "Discord")
         self._tabs.addTab(self._build_log_tab(), "Log")
 
@@ -841,6 +899,9 @@ class MainWindow(QMainWindow):
         """)
         self._scan_progress.setFixedHeight(6)
         lo.addWidget(self._scan_progress)
+        self._scan_current = _lbl("", TEXT_DIM, 10)
+        self._scan_current.setStyleSheet(f"font-size: 10px; color: {TEXT_DIM}; background: transparent; border: none; padding: 2px 0;")
+        lo.addWidget(self._scan_current)
 
         self._scan_tree = QTreeWidget()
         self._scan_tree.setHeaderLabels(["Sciezka", "Rozmiar", "Format", "Data modyfikacji"])
@@ -885,6 +946,7 @@ class MainWindow(QMainWindow):
         self._scanner = ArchiveScanner(drives, excluded)
         self._scanner.progress.connect(self._on_scan_progress)
         self._scanner.found.connect(self._on_scan_found)
+        self._scanner.scanning.connect(self._on_scanning)
         self._scanner.finished.connect(self._on_scan_finished)
         self._scanner.start()
         self._log(f"Skanowanie {len(drives)} dyskow...")
@@ -917,6 +979,10 @@ class MainWindow(QMainWindow):
         self._scan_count.setText(f"Znaleziono: {self._scan_found_count}")
         if self._scan_found_count % 100 == 0:
             QApplication.processEvents()
+
+    def _on_scanning(self, path):
+        self._scan_current.setText(f"  Skanuje: {path}")
+        QApplication.processEvents()
 
     def _on_scan_finished(self, count):
         self._scan_btn.setEnabled(True)
@@ -999,7 +1065,128 @@ class MainWindow(QMainWindow):
         import webbrowser
         webbrowser.open("https://dc.gg/vexhack.py")
 
-    # ── TAB: LOG ──
+    def _show_about(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("O programie")
+        dlg.setFixedSize(360, 280)
+        dlg.setStyleSheet(f"background: {BG_DARK}; color: {TEXT}; font-family: {FONT_MAIN};")
+        lo = QVBoxLayout(dlg); lo.setContentsMargins(24, 24, 24, 24)
+        lo.setSpacing(8)
+
+        icon = QLabel()
+        pix = QPixmap(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
+        if not pix.isNull():
+            icon.setPixmap(pix.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("background: transparent; border: none;")
+        lo.addWidget(icon)
+
+        lo.addWidget(_lbl(f"VEXARCHIVE v{VERSION}", PINK, 18))
+        lo.addWidget(_lbl("Narzedzie do archiwizacji z kompresja BPE+RLE", TEXT_DIM, 11))
+        lo.addSpacing(8)
+        lo.addWidget(_lbl("Autor: wk12100lol-prog", TEXT, 12))
+        lo.addWidget(_lbl("Licencja: MIT", TEXT, 12))
+        lo.addWidget(_lbl("Repozytorium: github.com/wk12100lol-prog/vexhack.vh", TEXT_DIM, 10))
+        lo.addSpacing(8)
+        lo.addWidget(_lbl("Zbudowano z PyQt6, cryptography, PIL", TEXT_DIM, 10))
+
+        lo.addStretch()
+        ok_btn = QPushButton("OK")
+        ok_btn.setStyleSheet(f"""
+            QPushButton {{ background: {PINK}; color: #0d0f1a; font-weight: bold; border: none; border-radius: 6px; padding: 8px 32px; }}
+            QPushButton:hover {{ background: #ff8ab0; }}
+        """)
+        ok_btn.clicked.connect(dlg.accept)
+        lo.addWidget(ok_btn, 0, Qt.AlignmentFlag.AlignCenter)
+        dlg.exec()
+
+    # ── TAB: STATS ──
+    def _build_stats_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+        lo.addWidget(_lbl("Statystyki kompresji", PINK, 14))
+        lo.addWidget(_lbl("Analiza efektywnosci kompresji dla plikow .cmp i .vh.", TEXT_DIM, 11))
+
+        top = QHBoxLayout()
+        self._stats_scan_btn = QPushButton("Skanuj i analizuj")
+        self._stats_scan_btn.setStyleSheet(f"QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT}; border: {BORDER}; border-radius: 4px; padding: 6px 16px; }} QPushButton:hover {{ background: rgba(255,255,255,0.1); }}")
+        self._stats_scan_btn.clicked.connect(self._stats_scan)
+        top.addWidget(self._stats_scan_btn)
+        self._stats_clear_btn = QPushButton("Wyczysc")
+        self._stats_clear_btn.setStyleSheet(self._stats_scan_btn.styleSheet())
+        self._stats_clear_btn.clicked.connect(lambda: (self._stats_table.setRowCount(0), self._stats_chart.update()))
+        top.addWidget(self._stats_clear_btn)
+        top.addStretch()
+        self._stats_info = _lbl("", TEXT_DIM, 11)
+        top.addWidget(self._stats_info)
+        lo.addLayout(top)
+
+        split = QSplitter(Qt.Orientation.Horizontal)
+
+        # left: table
+        self._stats_table = QTableWidget()
+        self._stats_table.setColumnCount(5)
+        self._stats_table.setHorizontalHeaderLabels(["Plik", "Original", "Skompresowany", "Ratio", "Format"])
+        self._stats_table.setStyleSheet(f"""
+            QTableWidget {{ background: rgba(0,0,0,0.3); border: {BORDER}; border-radius: 4px; color: {TEXT}; font-size: 11px; gridline-color: rgba(255,255,255,0.05); }}
+            QHeaderView::section {{ background: rgba(255,255,255,0.05); color: {TEXT_DIM}; border: none; padding: 4px; font-weight: bold; }}
+        """)
+        self._stats_table.setSortingEnabled(True)
+        self._stats_table.horizontalHeader().setStretchLastSection(True)
+        split.addWidget(self._stats_table)
+
+        # right: chart
+        self._stats_chart = StatsChart()
+        self._stats_chart.setStyleSheet(f"background: rgba(0,0,0,0.3); border: {BORDER}; border-radius: 4px;")
+        split.addWidget(self._stats_chart)
+        split.setSizes([400, 300])
+
+        lo.addWidget(split, 1)
+        return w
+
+    def _stats_scan(self):
+        import string
+        drives = []
+        for letter in string.ascii_uppercase:
+            d = f"{letter}:\\"
+            if os.path.exists(d): drives.append(d)
+        excluded = [d.strip() for d in self._settings.get("exclude_dirs", "").split(",") if d.strip()]
+        self._stats_info.setText("Skanowanie...")
+        self._stats_scan_btn.setEnabled(False)
+        self._stats_data = []
+        self._stats_scanner = ArchiveScanner(drives, excluded)
+        self._stats_scanner.found.connect(self._stats_on_found)
+        self._stats_scanner.finished.connect(self._stats_on_finished)
+        self._stats_scanner.start()
+
+    def _stats_on_found(self, path, size, fmt, mtime):
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            from compression import CMPCompressor, VHCompressor
+            if fmt == "CMP":
+                comp = CMPCompressor.compress(raw, passes=5, num_pairs=24)
+            else:
+                comp = VHCompressor.compress(raw, passes=5, num_pairs=48)
+            ratio = len(comp) / len(raw) if raw else 1
+            self._stats_data.append((path, len(raw), len(comp), ratio, fmt))
+            row = self._stats_table.rowCount()
+            self._stats_table.insertRow(row)
+            self._stats_table.setItem(row, 0, QTableWidgetItem(os.path.basename(path)))
+            self._stats_table.setItem(row, 1, QTableWidgetItem(_fmt_size(len(raw))))
+            self._stats_table.setItem(row, 2, QTableWidgetItem(_fmt_size(len(comp))))
+            ritem = QTableWidgetItem(f"{ratio*100:.1f}%")
+            if ratio < 0.5: ritem.setForeground(QBrush(QColor(GREEN)))
+            elif ratio > 0.9: ritem.setForeground(QBrush(QColor("#ff6b6b")))
+            self._stats_table.setItem(row, 3, ritem)
+            self._stats_table.setItem(row, 4, QTableWidgetItem(fmt))
+        except: pass
+
+    def _stats_on_finished(self, count):
+        self._stats_scan_btn.setEnabled(True)
+        self._stats_info.setText(f"Przeanalizowano {len(self._stats_data)} plikow")
+        self._stats_chart.set_data(self._stats_data)
+        self._stats_chart.update()
+        self._stats_table.resizeColumnsToContents()
     def _build_log_tab(self):
         w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
         self._log_widget = QTextEdit()

@@ -280,7 +280,7 @@ class ParticlesWidget(QWidget):
 # ── MAIN WINDOW ──
 
 class MainWindow(QMainWindow):
-    def __init__(self, pack_path=None):
+    def __init__(self, pack_path=None, pack_format=None):
         super().__init__()
         self.setWindowTitle(f"VEXARCHIVE v{VERSION}")
         logo_icon = QIcon(_resource_path("logo.png"))
@@ -306,6 +306,9 @@ class MainWindow(QMainWindow):
                         fp = os.path.join(root, fn)
                         rel = os.path.relpath(fp, os.path.dirname(pack_path))
                         self._add_pack_file(fp, rel)
+            if pack_format and pack_format.upper() in ARCHIVERS:
+                idx = list(ARCHIVERS.keys()).index(pack_format.upper())
+                self._pack_fmt.setCurrentIndex(idx)
             self._tabs.setCurrentIndex(0)
         # discord popup timer
         self._discord_timer = QTimer(self)
@@ -1363,16 +1366,38 @@ class MainWindow(QMainWindow):
         exe = sys.argv[0] if not getattr(sys, 'frozen', False) else sys.executable
         exe = os.path.abspath(exe)
         try:
+            # ── file association: .cmp / .vh → double-click opens ──
             for ext, arch_name in [(".cmp", "CMP"), (".vh", "VH")]:
                 with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}") as k:
                     winreg.SetValue(k, "", winreg.REG_SZ, f"VEXArchive.{arch_name}")
                 with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\VEXArchive.{arch_name}\shell\open\command") as k:
                     winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "%1"')
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Pakuj VEXARCHIVE\command") as k:
-                winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
-            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\shell\Pakuj VEXARCHIVE\command") as k:
-                winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
-            QMessageBox.information(self, "OK", "Menu kontekstowe dodane!\n\n- .cmp / .vh → otwiera w VEXARCHIVE\n- Plik/folder → Pakuj VEXARCHIVE")
+
+            # helper: create submenu at a given root key
+            def add_submenu(root_key, root_name):
+                base = rf"Software\Classes\{root_name}\shell\VEXARCHIVE"
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base) as k:
+                    winreg.SetValue(k, "", winreg.REG_SZ, "VEXARCHIVE")
+                    winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, "VEXARCHIVE")
+                    winreg.SetValueEx(k, "subcommands", 0, winreg.REG_SZ, "")
+                    winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, f'"{exe}",0')
+                for idx, (label, fmt) in enumerate([("Pakuj jako CMP", "cmp"), ("Pakuj jako VH", "vh")], 1):
+                    cmd_key = rf"{base}\shell\{idx:02d}{fmt}\command"
+                    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, cmd_key) as k:
+                        winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "--format" "{fmt}" "%1"')
+                    # set the sub-item display name
+                    item_key = rf"{base}\shell\{idx:02d}{fmt}"
+                    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, item_key) as k:
+                        winreg.SetValue(k, "", winreg.REG_SZ, label)
+
+            add_submenu(winreg.HKEY_CURRENT_USER, "*")
+            add_submenu(winreg.HKEY_CURRENT_USER, "Directory")
+
+            QMessageBox.information(self, "OK", "Menu kontekstowe dodane!\n\n"
+                "Kliknij prawym na plik/folder → VEXARCHIVE →\n"
+                "• Pakuj jako CMP\n"
+                "• Pakuj jako VH\n\n"
+                ".cmp / .vh → dwuklik otwiera w VEXARCHIVE")
         except Exception as e:
             QMessageBox.critical(self, "Blad", f"Nie udalo sie dodac menu kontekstowego:\n{e}\n\nUruchom jako Administrator.")
 
@@ -1553,11 +1578,27 @@ def _register_context_menu_cli():
                 winreg.SetValue(k, "", winreg.REG_SZ, f"VEXArchive.{arch_name}")
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\VEXArchive.{arch_name}\shell\open\command") as k:
                 winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "%1"')
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Pakuj VEXARCHIVE\command") as k:
-            winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\shell\Pakuj VEXARCHIVE\command") as k:
-            winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
+
+        def add_submenu(root_name):
+            base = rf"Software\Classes\{root_name}\shell\VEXARCHIVE"
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, base) as k:
+                winreg.SetValue(k, "", winreg.REG_SZ, "VEXARCHIVE")
+                winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, "VEXARCHIVE")
+                winreg.SetValueEx(k, "subcommands", 0, winreg.REG_SZ, "")
+                winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, f'"{exe}",0')
+            for idx, (label, fmt) in enumerate([("Pakuj jako CMP", "cmp"), ("Pakuj jako VH", "vh")], 1):
+                cmd_key = rf"{base}\shell\{idx:02d}{fmt}\command"
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, cmd_key) as k:
+                    winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "--format" "{fmt}" "%1"')
+                item_key = rf"{base}\shell\{idx:02d}{fmt}"
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, item_key) as k:
+                    winreg.SetValue(k, "", winreg.REG_SZ, label)
+
+        add_submenu("*")
+        add_submenu("Directory")
+
         print("Menu kontekstowe dodane pomyslnie!")
+        print("Kliknij prawym na plik/folder → VEXARCHIVE → Pakuj jako CMP / VH")
         return True
     except Exception as e:
         print(f"Blad: {e}")
@@ -1578,11 +1619,23 @@ def run_gui():
         _register_context_menu_cli()
         return
 
+    pack_format = None
+    pack_path = None
+    # find --format value and first positional arg
+    skip_next = False
+    for i, a in enumerate(sys.argv[1:]):
+        if skip_next: skip_next = False; continue
+        if a in ("--format", "/format"):
+            if i+1 < len(sys.argv[1:]):
+                pack_format = sys.argv[i+2].lower()
+                skip_next = True
+        elif not a.startswith("--") and not a.startswith("/"):
+            pack_path = a
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    pack_path = args[0] if args else None
-    w = MainWindow(pack_path)
+    w = MainWindow(pack_path, pack_format)
     w.show()
     sys.exit(app.exec())
 

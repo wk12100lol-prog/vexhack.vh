@@ -14,8 +14,18 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF, QSize
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.6.2"
+VERSION = "3.0.0"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
+
+def _base_path():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _resource_path(rel):
+    if getattr(sys, 'frozen', False):
+        return os.path.join(sys._MEIPASS, rel)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), rel)
 
 ARCHIVERS = {
     "CMP": {"ext": ".cmp", "cls": CMPArchive, "color": "#ff6b9d", "desc": "Standard"},
@@ -77,13 +87,15 @@ class UpdateChecker(QThread):
             body = (data.get("body") or "")[:200]
             assets = data.get("assets", [])
             zip_url = None
+            exe_url = None
             for a in assets:
                 if a["name"].endswith(".zip"):
                     zip_url = a["browser_download_url"]
-                    break
+                elif a["name"].endswith(".exe"):
+                    exe_url = a["browser_download_url"]
             if not zip_url:
                 zip_url = data.get("zipball_url")
-            self.finished.emit({"tag": tag, "url": html_url, "body": body, "zip_url": zip_url, "ok": True})
+            self.finished.emit({"tag": tag, "url": html_url, "body": body, "zip_url": zip_url, "exe_url": exe_url, "ok": True})
         except HTTPError as e:
             if e.code == 404:
                 self.finished.emit({"ok": False, "error": "Brak wydan na GitHub. Utworz pierwszy release!"})
@@ -268,13 +280,13 @@ class ParticlesWidget(QWidget):
 # ── MAIN WINDOW ──
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, pack_path=None):
         super().__init__()
         self.setWindowTitle(f"VEXARCHIVE v{VERSION}")
-        logo_icon = QIcon(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
+        logo_icon = QIcon(_resource_path("logo.png"))
         if not logo_icon.isNull():
             self.setWindowIcon(logo_icon)
-        self._settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+        self._settings_path = os.path.join(_base_path(), "settings.json")
         self._settings = self._load_settings()
         self.resize(1100, 720)
         self._setup_ui()
@@ -284,6 +296,17 @@ class MainWindow(QMainWindow):
         self._pack_files = []
         self._log_lines = []
         self._log("VEXARCHIVE v{} uruchomiony".format(VERSION))
+        # handle --pack arg
+        if pack_path:
+            if os.path.isfile(pack_path):
+                self._add_pack_file(pack_path)
+            elif os.path.isdir(pack_path):
+                for root, dirs, fnames in os.walk(pack_path):
+                    for fn in fnames:
+                        fp = os.path.join(root, fn)
+                        rel = os.path.relpath(fp, os.path.dirname(pack_path))
+                        self._add_pack_file(fp, rel)
+            self._tabs.setCurrentIndex(0)
         # discord popup timer
         self._discord_timer = QTimer(self)
         self._discord_timer.timeout.connect(self._maybe_show_discord)
@@ -304,7 +327,7 @@ class MainWindow(QMainWindow):
         hdr.setStyleSheet("background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.06);")
         hl = QHBoxLayout(hdr); hl.setContentsMargins(16, 0, 16, 0)
         logo_label = QLabel()
-        logo_pix = QPixmap(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
+        logo_pix = QPixmap(_resource_path("logo.png"))
         if not logo_pix.isNull():
             logo_label.setPixmap(logo_pix.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
             logo_label.setStyleSheet("background: transparent; border: none;")
@@ -1082,7 +1105,7 @@ class MainWindow(QMainWindow):
         lo.setSpacing(6)
 
         icon = QLabel()
-        pix = QPixmap(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
+        pix = QPixmap(_resource_path("logo.png"))
         if not pix.isNull():
             icon.setPixmap(pix.scaled(72, 72, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1308,6 +1331,11 @@ class MainWindow(QMainWindow):
         ed.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
         lo.addWidget(ed)
 
+        # context menu button
+        cm = _make_btn("DODAJ DO MENU KONTEKSTOWEGO", GREEN)
+        cm.clicked.connect(self._register_context_menu)
+        lo.addWidget(cm)
+
         lo.addStretch()
 
         # buttons
@@ -1329,6 +1357,24 @@ class MainWindow(QMainWindow):
         self._settings["discord_enabled"] = discord_enabled
         self._settings["exclude_dirs"] = exclude_dirs
         self._save_settings()
+
+    def _register_context_menu(self):
+        import winreg
+        exe = sys.argv[0] if not getattr(sys, 'frozen', False) else sys.executable
+        exe = os.path.abspath(exe)
+        try:
+            for ext, arch_name in [(".cmp", "CMP"), (".vh", "VH")]:
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}") as k:
+                    winreg.SetValue(k, "", winreg.REG_SZ, f"VEXArchive.{arch_name}")
+                with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\VEXArchive.{arch_name}\shell\open\command") as k:
+                    winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "%1"')
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Pakuj VEXARCHIVE\command") as k:
+                winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\shell\Pakuj VEXARCHIVE\command") as k:
+                winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
+            QMessageBox.information(self, "OK", "Menu kontekstowe dodane!\n\n- .cmp / .vh → otwiera w VEXARCHIVE\n- Plik/folder → Pakuj VEXARCHIVE")
+        except Exception as e:
+            QMessageBox.critical(self, "Blad", f"Nie udalo sie dodac menu kontekstowego:\n{e}\n\nUruchom jako Administrator.")
 
     def _maybe_show_discord(self):
         if not self._settings.get("discord_enabled", True): return
@@ -1409,8 +1455,13 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(self, "Aktualizacja",
             f"Dostepna nowa wersja: {tag}\n\n{res.get('body', '')}\n\nPobrac i zainstalowac?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes and res.get("zip_url"):
-            self._download_update(res["zip_url"], tag)
+        if reply == QMessageBox.StandardButton.Yes:
+            if getattr(sys, 'frozen', False) and res.get("exe_url"):
+                self._download_update(res["exe_url"], tag, exe_mode=True)
+            elif res.get("zip_url"):
+                self._download_update(res["zip_url"], tag)
+            else:
+                QMessageBox.warning(self, "Blad", "Brak URL do pobrania aktualizacji.")
 
     def _version_cmp(self, a, b):
         pa = [int(x) for x in a.split(".")]
@@ -1421,20 +1472,43 @@ class MainWindow(QMainWindow):
             if va != vb: return va - vb
         return 0
 
-    def _download_update(self, zip_url, tag):
-        self._update_downloader = UpdateDownloader(zip_url)
+    def _download_update(self, url, tag, exe_mode=False):
+        self._update_downloader = UpdateDownloader(url)
         self._update_downloader.progress.connect(lambda p: self._update_btn.setText(f"⬇ Pobieranie {p}%"))
-        self._update_downloader.finished.connect(lambda r: self._apply_update(r, tag))
+        self._update_downloader.finished.connect(lambda r: self._apply_update(r, tag, exe_mode))
         self._update_downloader.start()
 
-    def _apply_update(self, res, tag):
+    def _apply_update(self, res, tag, exe_mode=False):
         if not res.get("ok"):
             QMessageBox.critical(self, "Blad", f"Nie udalo sie pobrac aktualizacji:\n{res.get('error', '?')}")
             self._update_btn.setText("⬇ Sprawdz aktualizacje")
             return
         try:
+            base = _base_path()
+            # ── exe mode: download new exe + swap via batch ──
+            if exe_mode:
+                new_exe = os.path.join(base, "VEXARCHIVE.new.exe")
+                with open(new_exe, "wb") as f:
+                    f.write(res["data"])
+                bat = os.path.join(base, "_update.bat")
+                with open(bat, "w") as f:
+                    f.write(f"""@echo off
+:loop
+tasklist /fi "IMAGENAME eq VEXARCHIVE.exe" 2>nul | find /i "VEXARCHIVE.exe" >nul
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >nul
+    goto loop
+)
+del "%~dp0VEXARCHIVE.exe"
+ren "%~dp0VEXARCHIVE.new.exe" "VEXARCHIVE.exe"
+start "" "%~dp0VEXARCHIVE.exe"
+del "%~f0"
+""")
+                subprocess.Popen(["cmd", "/c", bat], cwd=base)
+                QApplication.quit()
+                return
+            # ── source mode: extract zipball ──
             z = zipfile.ZipFile(io.BytesIO(res["data"]))
-            base = os.path.dirname(os.path.abspath(sys.argv[0]))
             names = z.namelist()
             # detect common root dir (GitHub zipballs have one, Compress-Archive doesn't)
             roots = set()
@@ -1470,14 +1544,45 @@ def _fmt_size(sz):
     else: return f"{sz/1024/1024:.1f} MB"
 
 
+def _register_context_menu_cli():
+    import winreg
+    exe = os.path.abspath(sys.executable)
+    try:
+        for ext, arch_name in [(".cmp", "CMP"), (".vh", "VH")]:
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{ext}") as k:
+                winreg.SetValue(k, "", winreg.REG_SZ, f"VEXArchive.{arch_name}")
+            with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\VEXArchive.{arch_name}\shell\open\command") as k:
+                winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "%1"')
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\*\shell\Pakuj VEXARCHIVE\command") as k:
+            winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\Directory\shell\Pakuj VEXARCHIVE\command") as k:
+            winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe}" "--pack" "%1"')
+        print("Menu kontekstowe dodane pomyslnie!")
+        return True
+    except Exception as e:
+        print(f"Blad: {e}")
+        print("Uruchom jako Administrator.")
+        return False
+
 def run_gui():
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("vexhack.vexarchive")
     except: pass
+
+    # CLI args
+    args = [a for a in sys.argv[1:] if not a.startswith("--") and not a.startswith("/")]
+    flags = set(a for a in sys.argv[1:] if a.startswith("--") or a.startswith("/"))
+
+    if "--register-context-menu" in flags or "/register" in flags:
+        _register_context_menu_cli()
+        return
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    w = MainWindow()
+
+    pack_path = args[0] if args else None
+    w = MainWindow(pack_path)
     w.show()
     sys.exit(app.exec())
 

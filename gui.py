@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.4.1"
+VERSION = "2.5.0"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 ARCHIVERS = {
@@ -301,6 +301,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._build_repair_tab(), "Naprawa")
         self._tabs.addTab(self._build_compare_tab(), "Porownanie")
         self._tabs.addTab(self._build_scanner_tab(), "Skaner")
+        self._tabs.addTab(self._build_discord_tab(), "Discord")
         self._tabs.addTab(self._build_log_tab(), "Log")
 
         # layout
@@ -933,6 +934,70 @@ class MainWindow(QMainWindow):
             self._preview_path.setText(path)
             self._load_preview(False)
             self._tabs.setCurrentIndex(2)  # switch to preview tab
+
+    # ── TAB: DISCORD ──
+    def _build_discord_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+
+        card = _make_card()
+        cl = QVBoxLayout(card); cl.setContentsMargins(32, 32, 32, 32)
+        cl.setSpacing(16)
+
+        icon_lbl = QLabel("[ 💬 ]")
+        icon_lbl.setStyleSheet(f"font-size: 64px; background: transparent; border: none;")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(icon_lbl)
+
+        title_lbl = QLabel("DOLACZ DO VEXHACK")
+        title_lbl.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {PINK}; background: transparent; border: none;")
+        title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(title_lbl)
+
+        desc = QLabel(
+            "Serwer Discord dla uzytkownikow VEXARCHIVE i VEXHACK.\n\n"
+            " ‎• Wspolna zabawa i integracja\n"
+            " ‎• Pomoc techniczna i support\n"
+            " ‎• Nowosci i aktualizacje\n"
+            " ‎• Dzielenie sie archiwami\n"
+            " ‎• Tryby, mody, narzedzia\n\n"
+            "Dolacz teraz i poznaj reszte ekipy!"
+        )
+        desc.setStyleSheet(f"font-size: 13px; color: {TEXT}; background: transparent; border: none; line-height: 1.6;")
+        desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        desc.setWordWrap(True)
+        cl.addWidget(desc)
+
+        status_lbl = QLabel("🟢 SERWER AKTYWNY")
+        status_lbl.setStyleSheet(f"font-size: 12px; color: {GREEN}; background: transparent; border: none;")
+        status_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(status_lbl)
+
+        cl.addStretch()
+
+        join_btn = QPushButton("   DOLACZ DO DISCORDA   ")
+        join_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        join_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #5865F2, stop:1 {PINK});
+                color: white; font-weight: bold; font-size: 15px;
+                border: none; border-radius: 8px; padding: 14px 40px;
+            }}
+            QPushButton:hover {{ opacity: 0.9; }}
+        """)
+        join_btn.clicked.connect(self._open_discord_tab)
+        cl.addWidget(join_btn, 0, Qt.AlignmentFlag.AlignCenter)
+
+        invite_lbl = QLabel("dc.gg/vexhack.py")
+        invite_lbl.setStyleSheet(f"font-size: 11px; color: {TEXT_DIM}; background: transparent; border: none;")
+        invite_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(invite_lbl)
+
+        lo.addWidget(card, 1, Qt.AlignmentFlag.AlignCenter)
+        return w
+
+    def _open_discord_tab(self):
+        import webbrowser
+        webbrowser.open("https://dc.gg/vexhack.py")
 
     # ── TAB: LOG ──
     def _build_log_tab(self):

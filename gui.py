@@ -1068,33 +1068,70 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         dlg = QDialog(self)
         dlg.setWindowTitle("O programie")
-        dlg.setFixedSize(360, 280)
+        dlg.setFixedSize(380, 320)
         dlg.setStyleSheet(f"background: {BG_DARK}; color: {TEXT}; font-family: {FONT_MAIN};")
+
+        # glow border
+        dlg.setObjectName("aboutDlg")
+        dlg.setStyleSheet(f"""
+            #aboutDlg {{ background: {BG_DARK}; border: 2px solid {PINK}; border-radius: 16px; }}
+            QLabel {{ background: transparent; border: none; }}
+        """)
+
         lo = QVBoxLayout(dlg); lo.setContentsMargins(24, 24, 24, 24)
-        lo.setSpacing(8)
+        lo.setSpacing(6)
 
         icon = QLabel()
         pix = QPixmap(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
         if not pix.isNull():
-            icon.setPixmap(pix.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            icon.setPixmap(pix.scaled(72, 72, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("background: transparent; border: none;")
         lo.addWidget(icon)
 
-        lo.addWidget(_lbl(f"VEXARCHIVE v{VERSION}", PINK, 18))
-        lo.addWidget(_lbl("Narzedzie do archiwizacji z kompresja BPE+RLE", TEXT_DIM, 11))
+        lo.addSpacing(4)
+        t = _lbl(f"VEXARCHIVE v{VERSION}", PINK, 22)
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lo.addWidget(t)
+
+        s = _lbl("Narzedzie do archiwizacji z kompresja BPE+RLE", TEXT_DIM, 11)
+        s.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        s.setWordWrap(True)
+        lo.addWidget(s)
+
+        lo.addSpacing(12)
+
+        def info_row(label, value, val_color=TEXT):
+            r = QHBoxLayout()
+            r.addStretch()
+            r.addWidget(_lbl(label, TEXT_DIM, 12))
+            r.addWidget(_lbl(value, val_color, 12))
+            r.addStretch()
+            lo.addLayout(r)
+
+        info_row("Autor: ", "v0idvex", PINK)
+        info_row("Licencja: ", "MIT", GREEN)
+        info_row("Wersja: ", VERSION, PINK)
+
         lo.addSpacing(8)
-        lo.addWidget(_lbl("Autor: wk12100lol-prog", TEXT, 12))
-        lo.addWidget(_lbl("Licencja: MIT", TEXT, 12))
-        lo.addWidget(_lbl("Repozytorium: github.com/wk12100lol-prog/vexhack.vh", TEXT_DIM, 10))
-        lo.addSpacing(8)
-        lo.addWidget(_lbl("Zbudowano z PyQt6, cryptography, PIL", TEXT_DIM, 10))
+        repo_lbl = _lbl("github.com/v0idvex/vexhack.vh", TEXT_DIM, 10)
+        repo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        repo_lbl.setStyleSheet(f"font-size: 10px; color: {TEXT_DIM}; background: transparent; border: none; padding: 4px;")
+        lo.addWidget(repo_lbl)
+
+        stack_lbl = _lbl("Zbudowano z PyQt6, cryptography, Pillow", TEXT_DIM, 10)
+        stack_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lo.addWidget(stack_lbl)
 
         lo.addStretch()
         ok_btn = QPushButton("OK")
+        ok_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         ok_btn.setStyleSheet(f"""
-            QPushButton {{ background: {PINK}; color: #0d0f1a; font-weight: bold; border: none; border-radius: 6px; padding: 8px 32px; }}
-            QPushButton:hover {{ background: #ff8ab0; }}
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {PINK}, stop:1 {GREEN});
+                color: #0d0f1a; font-weight: bold; font-size: 14px;
+                border: none; border-radius: 8px; padding: 10px 48px;
+            }}
+            QPushButton:hover {{ opacity: 0.85; }}
         """)
         ok_btn.clicked.connect(dlg.accept)
         lo.addWidget(ok_btn, 0, Qt.AlignmentFlag.AlignCenter)

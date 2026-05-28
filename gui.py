@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.3.1"
+VERSION = "2.4.0"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 ARCHIVERS = {
@@ -124,16 +124,17 @@ class ArchiveScanner(QThread):
     found = pyqtSignal(str, int, str, str)
     finished = pyqtSignal(int)
 
-    def __init__(self, drives):
+    def __init__(self, drives, excluded_dirs=None):
         super().__init__()
         self.drives = drives
+        self._excluded = tuple(excluded_dirs) if excluded_dirs else ()
         self._stop = False
     def stop(self):
         self._stop = True
 
     def _skip_dir(self, dp):
-        skip_prefixes = (r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)", r"C:\ProgramData", r"C:\$Recycle.Bin", r"C:\System Volume Information", r"C:\Users\All Users")
-        return dp.startswith(skip_prefixes)
+        prefixes = self._excluded or (r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)", r"C:\ProgramData", r"C:\$Recycle.Bin", r"C:\System Volume Information")
+        return dp.startswith(prefixes)
 
     def _count_dirs(self):
         total = 0
@@ -225,6 +226,8 @@ class MainWindow(QMainWindow):
         logo_icon = QIcon(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
         if not logo_icon.isNull():
             self.setWindowIcon(logo_icon)
+        self._settings_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+        self._settings = self._load_settings()
         self.resize(1100, 720)
         self._setup_ui()
         # drag drop
@@ -233,6 +236,10 @@ class MainWindow(QMainWindow):
         self._pack_files = []
         self._log_lines = []
         self._log("VEXARCHIVE v{} uruchomiony".format(VERSION))
+        # discord popup timer
+        self._discord_timer = QTimer(self)
+        self._discord_timer.timeout.connect(self._maybe_show_discord)
+        self._discord_timer.start(60000)
 
     def _setup_ui(self):
         cw = QWidget()
@@ -261,6 +268,15 @@ class MainWindow(QMainWindow):
         ver.setStyleSheet(f"font-size: 10px; color: {TEXT_DIM}; padding-top: 14px; background: transparent; border: none;")
         hl.addWidget(ver)
         hl.addStretch()
+        self._settings_btn = QPushButton("⚙")
+        self._settings_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._settings_btn.setFixedWidth(32)
+        self._settings_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {TEXT_DIM}; border: 1px solid transparent; border-radius: 4px; padding: 4px; font-size: 16px; }}
+            QPushButton:hover {{ background: rgba(255,255,255,0.06); color: {TEXT}; }}
+        """)
+        self._settings_btn.clicked.connect(self._show_settings)
+        hl.addWidget(self._settings_btn)
         self._update_btn = QPushButton("⬇ Sprawdz aktualizacje")
         self._update_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._update_btn.setStyleSheet(f"""
@@ -863,7 +879,9 @@ class MainWindow(QMainWindow):
             d = f"{letter}:\\"
             if os.path.exists(d):
                 drives.append(d)
-        self._scanner = ArchiveScanner(drives)
+        # use settings excluded dirs
+        excluded = [d.strip() for d in self._settings.get("exclude_dirs", "").split(",") if d.strip()]
+        self._scanner = ArchiveScanner(drives, excluded)
         self._scanner.progress.connect(self._on_scan_progress)
         self._scanner.found.connect(self._on_scan_found)
         self._scanner.finished.connect(self._on_scan_finished)
@@ -955,6 +973,119 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._particles.resize(self.width(), self.height())
+
+    # ── SETTINGS ──
+    def _load_settings(self):
+        default = {"auto_update": True, "exclude_dirs": "C:\\Windows,C:\\Program Files,C:\\ProgramData,C:\\$Recycle.Bin", "discord_enabled": True}
+        try:
+            if os.path.isfile(self._settings_path):
+                with open(self._settings_path, "r", encoding="utf-8") as f:
+                    s = json.load(f)
+                    for k in default: s.setdefault(k, default[k])
+                    return s
+        except: pass
+        return dict(default)
+
+    def _save_settings(self):
+        try:
+            with open(self._settings_path, "w", encoding="utf-8") as f:
+                json.dump(self._settings, f, indent=2)
+        except: pass
+
+    def _show_settings(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Ustawienia")
+        dlg.setFixedSize(400, 300)
+        dlg.setStyleSheet(f"background: {BG_DARK}; color: {TEXT}; font-family: {FONT_MAIN};")
+        lo = QVBoxLayout(dlg); lo.setContentsMargins(20, 20, 20, 20)
+
+        lo.addWidget(_lbl("Ustawienia", PINK, 16))
+
+        # auto update
+        au = QCheckBox("Automatycznie sprawdzaj aktualizacje")
+        au.setChecked(self._settings.get("auto_update", True))
+        au.setStyleSheet(f"color: {TEXT}; font-size: 12px;")
+        lo.addWidget(au)
+
+        # discord
+        dc = QCheckBox("Pokazuj zaproszenie do Discorda")
+        dc.setChecked(self._settings.get("discord_enabled", True))
+        dc.setStyleSheet(f"color: {TEXT}; font-size: 12px;")
+        lo.addWidget(dc)
+
+        # excluded dirs
+        lo.addWidget(_lbl("Pominiete katalogi (przecinki):", TEXT_DIM, 11))
+        ed = QLineEdit(self._settings.get("exclude_dirs", ""))
+        ed.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        lo.addWidget(ed)
+
+        lo.addStretch()
+
+        # buttons
+        br = QHBoxLayout()
+        ok = _make_btn("ZAPISZ", PINK)
+        cancel = QPushButton("ANULUJ")
+        cancel.setStyleSheet(f"QPushButton {{ background: transparent; color: {TEXT_DIM}; border: {BORDER}; border-radius: 4px; padding: 8px 20px; }} QPushButton:hover {{ color: {TEXT}; }}")
+        br.addStretch(); br.addWidget(cancel); br.addWidget(ok)
+        lo.addLayout(br)
+
+        cancel.clicked.connect(dlg.reject)
+        ok.clicked.connect(lambda: self._save_settings_dlg(dlg, au.isChecked(), dc.isChecked(), ed.text()))
+        ok.clicked.connect(dlg.accept)
+
+        dlg.exec()
+
+    def _save_settings_dlg(self, dlg, auto_update, discord_enabled, exclude_dirs):
+        self._settings["auto_update"] = auto_update
+        self._settings["discord_enabled"] = discord_enabled
+        self._settings["exclude_dirs"] = exclude_dirs
+        self._save_settings()
+
+    def _maybe_show_discord(self):
+        if not self._settings.get("discord_enabled", True): return
+        if random.random() > 0.008: return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(" ")
+        dlg.setFixedSize(340, 200)
+        dlg.setStyleSheet(f"background: {BG_DARK}; border: 2px solid {PINK}; border-radius: 12px;")
+        lo = QVBoxLayout(dlg); lo.setContentsMargins(24, 24, 24, 24)
+        lo.setSpacing(12)
+
+        lbl = QLabel("DOLACZ DO NAS NA DISCORDZIE!")
+        lbl.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {PINK}; background: transparent; border: none;")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lo.addWidget(lbl)
+
+        sub = QLabel("Spotkajmy sie na serwerze VEXHACK.\nWspolna zabawa, pomoc i nowosci!")
+        sub.setStyleSheet(f"font-size: 12px; color: {TEXT}; background: transparent; border: none;")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setWordWrap(True)
+        lo.addWidget(sub)
+
+        icon_lbl = QLabel("[ 💬 ]")
+        icon_lbl.setStyleSheet(f"font-size: 40px; background: transparent; border: none;")
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lo.addWidget(icon_lbl)
+
+        br = QHBoxLayout()
+        join_btn = QPushButton("DOLACZ")
+        join_btn.setStyleSheet(f"""
+            QPushButton {{ background: {PINK}; color: #0d0f1a; font-weight: bold; font-size: 13px; border: none; border-radius: 6px; padding: 8px 28px; }}
+            QPushButton:hover {{ background: #ff8ab0; }}
+        """)
+        join_btn.clicked.connect(lambda: self._open_discord(dlg))
+        later_btn = QPushButton("Nie teraz")
+        later_btn.setStyleSheet(f"QPushButton {{ background: transparent; color: {TEXT_DIM}; border: none; padding: 8px; }} QPushButton:hover {{ color: {TEXT}; }}")
+        later_btn.clicked.connect(dlg.reject)
+        br.addStretch(); br.addWidget(later_btn); br.addWidget(join_btn)
+        lo.addLayout(br)
+
+        dlg.exec()
+
+    def _open_discord(self, dlg):
+        import webbrowser
+        webbrowser.open("https://dc.gg/vexhack.py")
+        dlg.accept()
 
     # ── UPDATE ──
     def _check_updates(self):

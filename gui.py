@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 ARCHIVERS = {
@@ -281,16 +281,12 @@ class MainWindow(QMainWindow):
         # compression level
         lvl_row = QHBoxLayout()
         lvl_row.addWidget(_lbl("Poziom kompresji:"))
+        self._pack_level = QComboBox()
+        self._pack_level.addItems([f"{i} - {'Szybki' if i<=3 else 'Sredni' if i<=7 else 'Max'}" for i in range(1, 11)])
+        self._pack_level.setCurrentIndex(4)
+        self._pack_level.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        lvl_row.addWidget(self._pack_level); lvl_row.addStretch()
         ol.addLayout(lvl_row)
-        slider_row = QHBoxLayout()
-        self._level_label = _lbl("5 (Sredni)", TEXT, 12)
-        self._pack_level = QSlider(Qt.Orientation.Horizontal)
-        self._pack_level.setRange(1, 10)
-        self._pack_level.setFixedWidth(200)
-        self._pack_level.valueChanged.connect(lambda v: self._level_label.setText(f"{v} {'(Szybki)' if v<=3 else '(Sredni)' if v<=7 else '(Max)'}"))
-        self._pack_level.setValue(5)
-        slider_row.addWidget(self._pack_level); slider_row.addWidget(self._level_label); slider_row.addStretch()
-        ol.addLayout(slider_row)
 
         # password
         pw_row = QHBoxLayout()
@@ -351,7 +347,7 @@ class MainWindow(QMainWindow):
         out_path, _ = QFileDialog.getSaveFileName(self, "Zapisz archiwum", f"archiwum{arch['ext']}", f"{arch['desc']} (*{arch['ext']})")
         if not out_path: return
         pw = self._pack_password.text().strip() or None
-        level = self._pack_level.value()
+        level = self._pack_level.currentIndex() + 1
         use_crc = self._pack_crc.isChecked()
         self._log(f"Pakowanie {len(self._pack_files)} plikow ({fmt}, poziom {level})...")
         self._particles._timer.setInterval(30)
@@ -662,14 +658,11 @@ class MainWindow(QMainWindow):
 
         lvl_row = QHBoxLayout()
         lvl_row.addWidget(_lbl("Poziom:"))
-        self._cmp_level_label = _lbl("5")
-        self._cmp_level = QSlider(Qt.Orientation.Horizontal)
-        self._cmp_level.setRange(1, 10)
-        self._cmp_level.setFixedWidth(150)
-        self._cmp_level.valueChanged.connect(lambda v: self._cmp_level_label.setText(str(v)))
-        self._cmp_level.setValue(5)
-        lvl_row.addWidget(self._cmp_level)
-        lvl_row.addWidget(self._cmp_level_label); lvl_row.addStretch()
+        self._cmp_level = QComboBox()
+        self._cmp_level.addItems([str(i) for i in range(1, 11)])
+        self._cmp_level.setCurrentIndex(4)
+        self._cmp_level.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        lvl_row.addWidget(self._cmp_level); lvl_row.addStretch()
         cl.addLayout(lvl_row)
 
         self._cmp_btn = _make_btn("POROWNAJ", GREEN)
@@ -698,7 +691,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, '_cmp_files') or not self._cmp_files:
             QMessageBox.warning(self, "Blad", "Wybierz pliki do porownania")
             return
-        level = self._cmp_level.value()
+        level = self._cmp_level.currentIndex() + 1
         cmp_passes = max(1, level); cmp_pairs = max(8, level * 3)
         vh_passes = max(1, level); vh_pairs = max(16, level * 5)
         self._cmp_table.setRowCount(0)

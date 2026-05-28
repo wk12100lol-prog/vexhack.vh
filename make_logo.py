@@ -2,34 +2,29 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 
 SIZE = 128
-bg = (13, 15, 26)
-pink = (255, 107, 157)
-green = (0, 255, 163)
-dim = (106, 111, 133)
+outline = 4
+inner = SIZE - outline * 2
 
-img = Image.new("RGBA", (SIZE, SIZE), bg + (0,))
+img = Image.new("RGBA", (SIZE, SIZE), (13, 15, 26, 255))
 draw = ImageDraw.Draw(img)
 
-# radial glow
-cx = cy = SIZE // 2
-for r in range(SIZE // 2, 0, -1):
-    a = int(20 * (1 - r / (SIZE // 2)))
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(pink[0], pink[1], pink[2], a))
+# rounded dark card
+draw.rounded_rectangle([2, 2, SIZE - 3, SIZE - 3], radius=18, fill=(20, 22, 36, 255), outline=(255, 107, 157), width=2)
 
-# outer ring
-draw.ellipse([8, 8, SIZE - 9, SIZE - 9], outline=pink, width=2)
-draw.ellipse([12, 12, SIZE - 13, SIZE - 13], outline=green, width=1)
+# inner border (green)
+draw.rounded_rectangle([6, 6, SIZE - 7, SIZE - 7], radius=15, outline=(0, 255, 163), width=1)
 
-# V
-pts_v = [(40, 95), (64, 30), (88, 95)]
-draw.line(pts_v, fill=pink, width=6, joint="curve")
+# V - thick pink
+pts = [(36, 96), (64, 28), (92, 96)]
+draw.line(pts, fill=(255, 107, 157), width=8, joint="curve")
+
 # A
-draw.line([(66, 95), (80, 50), (94, 95)], fill=pink, width=5, joint="curve")
-draw.line([(73, 78), (87, 78)], fill=pink, width=3)
+draw.line([(62, 96), (78, 44), (94, 96)], fill=(255, 107, 157), width=7, joint="curve")
+draw.line([(70, 74), (86, 74)], fill=(255, 107, 157), width=5)
 
-# small dots decoration
-for x, y in [(32, 32), (96, 32), (32, 96), (96, 96)]:
-    draw.ellipse([x - 2, y - 2, x + 2, y + 2], fill=green)
+# X dots (green)
+for x, y in [(30, 28), (98, 28), (30, 100), (98, 100)]:
+    draw.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(0, 255, 163))
 
 path = os.path.join(os.path.dirname(__file__) or ".", "logo.png")
 img.save(path)

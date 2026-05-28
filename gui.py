@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.2.1"
+VERSION = "2.3.0"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 ARCHIVERS = {
@@ -116,6 +116,47 @@ class UpdateDownloader(QThread):
         except Exception as e:
             self.finished.emit({"ok": False, "error": str(e)})
 
+
+# ── ARCHIVE SCANNER ──
+
+class ArchiveScanner(QThread):
+    progress = pyqtSignal(int, str)
+    found = pyqtSignal(str, int, str, str)
+    finished = pyqtSignal(int)
+
+    def __init__(self, drives):
+        super().__init__()
+        self.drives = drives
+        self._stop = False
+    def stop(self):
+        self._stop = True
+    def run(self):
+        exts = (".cmp", ".vh")
+        count = 0
+        for drive in self.drives:
+            if self._stop: break
+            self.progress.emit(0, f"Skanowanie {drive}...")
+            for root, dirs, files in os.walk(drive, topdown=True):
+                if self._stop: break
+                try:
+                    for f in files:
+                        if f.lower().endswith(exts):
+                            fp = os.path.join(root, f)
+                            try:
+                                sz = os.path.getsize(fp)
+                                mt = datetime.fromtimestamp(os.path.getmtime(fp)).strftime("%Y-%m-%d %H:%M")
+                                fmt = "CMP" if f.lower().endswith(".cmp") else "VH"
+                                self.found.emit(fp, sz, fmt, mt)
+                                count += 1
+                            except: pass
+                    # avoid deep recursion in system dirs
+                    for d in list(dirs):
+                        dp = os.path.join(root, d)
+                        if dp.startswith((r"C:\Windows", r"C:\Program Files", r"C:\ProgramData", r"C:\$Recycle.Bin", r"C:\System Volume Information")):
+                            dirs.remove(d)
+                except: pass
+                self.progress.emit(50, f"{drive}: {count} archiwow")
+        self.finished.emit(count)
 
 # ── PARTICLES CANVAS ──
 
@@ -221,6 +262,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._build_preview_tab(), "Podglad")
         self._tabs.addTab(self._build_repair_tab(), "Naprawa")
         self._tabs.addTab(self._build_compare_tab(), "Porownanie")
+        self._tabs.addTab(self._build_scanner_tab(), "Skaner")
         self._tabs.addTab(self._build_log_tab(), "Log")
 
         # layout
@@ -729,6 +771,123 @@ class MainWindow(QMainWindow):
         self._cmp_table.setItem(row, 4, witem)
         self._cmp_table.resizeColumnsToContents()
         self._log(f"Porownanie: CMP {cmp_total/orig_total*100:.1f}% vs VH {vh_total/orig_total*100:.1f}%")
+
+    # ── TAB: SCANNER ──
+    def _build_scanner_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+        lo.addWidget(_lbl("Skaner archiwow", PINK, 14))
+        lo.addWidget(_lbl("Znajdz wszystkie pliki .cmp i .vh na komputerze.", TEXT_DIM, 11))
+
+        top = QHBoxLayout()
+        self._scan_btn = _make_btn("🔍 SKANUJ WSZYSTKIE DYSKI", PINK)
+        self._scan_btn.clicked.connect(self._start_scan)
+        top.addWidget(self._scan_btn)
+        self._scan_stop_btn = QPushButton("STOP")
+        self._scan_stop_btn.setStyleSheet(f"""
+            QPushButton {{ background: #ff6b6b; color: white; font-weight: bold; border: none; border-radius: 6px; padding: 8px 20px; font-size: 13px; }}
+            QPushButton:disabled {{ background: #2a2d3a; color: #6a6f85; }}
+        """)
+        self._scan_stop_btn.clicked.connect(self._stop_scan)
+        self._scan_stop_btn.setEnabled(False)
+        top.addWidget(self._scan_stop_btn)
+        top.addStretch()
+        self._scan_status = _lbl("Gotowy", TEXT_DIM, 12)
+        top.addWidget(self._scan_status)
+        lo.addLayout(top)
+
+        self._scan_progress = QProgressBar()
+        self._scan_progress.setStyleSheet(f"""
+            QProgressBar {{ background: #1a1c2a; border: none; border-radius: 3px; height: 6px; text-align: center; font-size: 0px; }}
+            QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {PINK}, stop:1 {GREEN}); border-radius: 3px; }}
+        """)
+        self._scan_progress.setFixedHeight(6)
+        lo.addWidget(self._scan_progress)
+
+        self._scan_tree = QTreeWidget()
+        self._scan_tree.setHeaderLabels(["Sciezka", "Rozmiar", "Format", "Data modyfikacji"])
+        self._scan_tree.setColumnWidth(0, 450)
+        self._scan_tree.setSortingEnabled(True)
+        self._scan_tree.setStyleSheet(f"""
+            QTreeWidget {{ background: rgba(0,0,0,0.3); border: {BORDER}; border-radius: 4px; color: {TEXT}; font-size: 12px; }}
+            QTreeWidget::item {{ padding: 3px; }}
+            QHeaderView::section {{ background: rgba(255,255,255,0.05); color: {TEXT_DIM}; border: none; padding: 4px; }}
+        """)
+        self._scan_tree.itemDoubleClicked.connect(self._scan_item_double_click)
+        lo.addWidget(self._scan_tree, 1)
+
+        bottom = QHBoxLayout()
+        self._scan_count = _lbl("Znaleziono: 0", TEXT_DIM)
+        bottom.addWidget(self._scan_count)
+        bottom.addStretch()
+        self._scan_clear_btn = QPushButton("Wyczysc")
+        self._scan_clear_btn.setStyleSheet(f"QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT}; border: {BORDER}; border-radius: 4px; padding: 4px 12px; }} QPushButton:hover {{ background: rgba(255,255,255,0.1); }}")
+        self._scan_clear_btn.clicked.connect(lambda: (self._scan_tree.clear(), self._scan_count.setText("Znaleziono: 0")))
+        bottom.addWidget(self._scan_clear_btn)
+        lo.addLayout(bottom)
+        return w
+
+    def _start_scan(self):
+        self._scan_tree.clear()
+        self._scan_btn.setEnabled(False)
+        self._scan_stop_btn.setEnabled(True)
+        self._scan_status.setText("Skanowanie...")
+        self._scan_progress.setRange(0, 0)
+        self._scan_count.setText("Znaleziono: 0")
+        self._scan_found_count = 0
+        # get available drives
+        import string
+        drives = []
+        for letter in string.ascii_uppercase:
+            d = f"{letter}:\\"
+            if os.path.exists(d):
+                drives.append(d)
+        self._scanner = ArchiveScanner(drives)
+        self._scanner.progress.connect(self._on_scan_progress)
+        self._scanner.found.connect(self._on_scan_found)
+        self._scanner.finished.connect(self._on_scan_finished)
+        self._scanner.start()
+        self._log(f"Skanowanie {len(drives)} dyskow...")
+
+    def _stop_scan(self):
+        if hasattr(self, '_scanner') and self._scanner.isRunning():
+            self._scanner.stop()
+            self._scan_status.setText("Zatrzymano")
+            self._scan_progress.setRange(0, 100)
+            self._scan_progress.setValue(100)
+            self._scan_btn.setEnabled(True)
+            self._scan_stop_btn.setEnabled(False)
+            self._log("Skanowanie zatrzymane")
+
+    def _on_scan_progress(self, val, msg):
+        self._scan_status.setText(msg)
+
+    def _on_scan_found(self, path, size, fmt, mtime):
+        self._scan_found_count += 1
+        item = QTreeWidgetItem([path, _fmt_size(size), fmt, mtime])
+        item.setData(0, Qt.ItemDataRole.UserRole, path)
+        color = PINK if fmt == "CMP" else GREEN
+        item.setForeground(2, QBrush(QColor(color)))
+        self._scan_tree.addTopLevelItem(item)
+        self._scan_count.setText(f"Znaleziono: {self._scan_found_count}")
+        if self._scan_found_count % 100 == 0:
+            QApplication.processEvents()
+
+    def _on_scan_finished(self, count):
+        self._scan_btn.setEnabled(True)
+        self._scan_stop_btn.setEnabled(False)
+        self._scan_progress.setRange(0, 100)
+        self._scan_progress.setValue(100)
+        self._scan_status.setText(f"Skanowanie zakonczone: {count} archiwow")
+        self._scan_count.setText(f"Znaleziono: {count}")
+        self._log(f"Skanowanie zakonczone: {count} archiwow")
+
+    def _scan_item_double_click(self, item, col):
+        path = item.data(0, Qt.ItemDataRole.UserRole)
+        if path and os.path.isfile(path):
+            # load in preview tab
+            self._preview_path.setText(path)
+            self._load_preview(False)
+            self._tabs.setCurrentIndex(2)  # switch to preview tab
 
     # ── TAB: LOG ──
     def _build_log_tab(self):

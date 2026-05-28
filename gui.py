@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF, QSize
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 def _base_path():

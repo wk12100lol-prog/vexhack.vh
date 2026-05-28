@@ -11,10 +11,10 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDialogButtonBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
-from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon, QPixmap
 from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
 
-VERSION = "2.0.1"
+VERSION = "2.1.0"
 GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
 
 ARCHIVERS = {
@@ -159,6 +159,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"VEXARCHIVE v{VERSION}")
+        logo_icon = QIcon(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
+        if not logo_icon.isNull():
+            self.setWindowIcon(logo_icon)
         self.resize(1100, 720)
         self._setup_ui()
         # drag drop
@@ -182,6 +185,12 @@ class MainWindow(QMainWindow):
         hdr.setFixedHeight(50)
         hdr.setStyleSheet("background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.06);")
         hl = QHBoxLayout(hdr); hl.setContentsMargins(16, 0, 16, 0)
+        logo_label = QLabel()
+        logo_pix = QPixmap(os.path.join(os.path.dirname(__file__) or ".", "logo.png"))
+        if not logo_pix.isNull():
+            logo_label.setPixmap(logo_pix.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            logo_label.setStyleSheet("background: transparent; border: none;")
+            hl.addWidget(logo_label)
         title = QLabel(f"VEXARCHIVE")
         title.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {PINK}; background: transparent; border: none;")
         hl.addWidget(title)
@@ -274,17 +283,12 @@ class MainWindow(QMainWindow):
         lvl_row.addWidget(_lbl("Poziom kompresji:"))
         ol.addLayout(lvl_row)
         slider_row = QHBoxLayout()
+        self._level_label = _lbl("5 (Sredni)", TEXT, 12)
         self._pack_level = QSlider(Qt.Orientation.Horizontal)
         self._pack_level.setRange(1, 10)
-        self._pack_level.setValue(5)
         self._pack_level.setFixedWidth(200)
-        self._pack_level.setStyleSheet(f"""
-            QSlider::groove:horizontal {{ height: 4px; background: #2a2d3a; border-radius: 2px; }}
-            QSlider::handle:horizontal {{ background: {PINK}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
-            QSlider::sub-page:horizontal {{ background: {PINK}; border-radius: 2px; }}
-        """)
-        self._level_label = _lbl("5 (Sredni)", TEXT, 12)
         self._pack_level.valueChanged.connect(lambda v: self._level_label.setText(f"{v} {'(Szybki)' if v<=3 else '(Sredni)' if v<=7 else '(Max)'}"))
+        self._pack_level.setValue(5)
         slider_row.addWidget(self._pack_level); slider_row.addWidget(self._level_label); slider_row.addStretch()
         ol.addLayout(slider_row)
 
@@ -658,13 +662,13 @@ class MainWindow(QMainWindow):
 
         lvl_row = QHBoxLayout()
         lvl_row.addWidget(_lbl("Poziom:"))
-        self._cmp_level = QSlider(Qt.Orientation.Horizontal)
-        self._cmp_level.setRange(1, 10); self._cmp_level.setValue(5)
-        self._cmp_level.setFixedWidth(150)
-        self._cmp_level.setStyleSheet(self._pack_level.styleSheet())
-        lvl_row.addWidget(self._cmp_level)
         self._cmp_level_label = _lbl("5")
+        self._cmp_level = QSlider(Qt.Orientation.Horizontal)
+        self._cmp_level.setRange(1, 10)
+        self._cmp_level.setFixedWidth(150)
         self._cmp_level.valueChanged.connect(lambda v: self._cmp_level_label.setText(str(v)))
+        self._cmp_level.setValue(5)
+        lvl_row.addWidget(self._cmp_level)
         lvl_row.addWidget(self._cmp_level_label); lvl_row.addStretch()
         cl.addLayout(lvl_row)
 

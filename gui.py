@@ -1,0 +1,868 @@
+import os, sys, json, time, struct, zlib, math, random, zipfile, io, subprocess
+from datetime import datetime
+from urllib.request import urlopen, Request, HTTPError
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QTreeWidget, QTreeWidgetItem, QSplitter,
+    QProgressBar, QComboBox, QFrame, QFileDialog, QMessageBox,
+    QMenu, QAbstractItemView, QTextEdit, QCheckBox, QLineEdit,
+    QDialog, QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget,
+    QSlider, QButtonGroup, QRadioButton, QGroupBox, QFormLayout,
+    QSpinBox, QDialogButtonBox
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF, QRectF
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QDragEnterEvent, QDropEvent, QFontDatabase, QCursor, QAction, QIcon
+from compression import CMPArchive, VHArchive, CMPCompressor, VHCompressor
+
+VERSION = "2.0.0"
+GITHUB_REPO = "wk12100lol-prog/vexhack.vh"
+
+ARCHIVERS = {
+    "CMP": {"ext": ".cmp", "cls": CMPArchive, "color": "#ff6b9d", "desc": "Standard"},
+    "VH":  {"ext": ".vh",  "cls": VHArchive,  "color": "#00ffa3", "desc": "Very High"},
+}
+
+# ── THEME ──
+BG_DARK = "#0d0f1a"
+BG_CARD = "rgba(255,255,255,0.04)"
+BORDER = "1px solid rgba(255,255,255,0.08)"
+FONT_MAIN = "Segoe UI, Arial"
+PINK = "#ff6b9d"
+GREEN = "#00ffa3"
+TEXT = "#c8ccd4"
+TEXT_DIM = "#6a6f85"
+
+def _ss(widget, stylesheet):
+    widget.setStyleSheet(stylesheet)
+
+def _make_btn(text, color=PINK):
+    btn = QPushButton(text)
+    btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+    btn.setStyleSheet(f"""
+        QPushButton {{
+            background: {color}; color: #0d0f1a; font-weight: bold;
+            font-family: {FONT_MAIN}; font-size: 13px;
+            border: none; border-radius: 6px; padding: 8px 20px;
+        }}
+        QPushButton:hover {{ opacity: 0.85; }}
+        QPushButton:disabled {{ background: #2a2d3a; color: #6a6f85; }}
+    """)
+    return btn
+
+def _make_card():
+    f = QFrame(); f.setStyleSheet(f"background: {BG_CARD}; border: {BORDER}; border-radius: 8px;")
+    return f
+
+def _lbl(text, color=TEXT_DIM, size=12):
+    l = QLabel(text)
+    l.setStyleSheet(f"font-size: {size}px; color: {color}; background: transparent; border: none; font-family: {FONT_MAIN};")
+    return l
+
+
+# ── UPDATE CHECKER ──
+
+class UpdateChecker(QThread):
+    finished = pyqtSignal(dict)
+    def __init__(self, repo):
+        super().__init__()
+        self.repo = repo
+    def run(self):
+        try:
+            url = f"https://api.github.com/repos/{self.repo}/releases/latest"
+            req = Request(url, headers={"User-Agent": "VEXARCHIVE", "Accept": "application/json"})
+            resp = urlopen(req, timeout=8)
+            data = json.loads(resp.read().decode())
+            tag = data.get("tag_name", "")
+            html_url = data.get("html_url", "")
+            body = (data.get("body") or "")[:200]
+            assets = data.get("assets", [])
+            zip_url = None
+            for a in assets:
+                if a["name"].endswith(".zip"):
+                    zip_url = a["browser_download_url"]
+                    break
+            if not zip_url:
+                zip_url = data.get("zipball_url")
+            self.finished.emit({"tag": tag, "url": html_url, "body": body, "zip_url": zip_url, "ok": True})
+        except HTTPError as e:
+            if e.code == 404:
+                self.finished.emit({"ok": False, "error": "Brak wydan na GitHub. Utworz pierwszy release!"})
+            else:
+                self.finished.emit({"ok": False, "error": f"GitHub API: {e.code} {e.reason}"})
+        except Exception as e:
+            self.finished.emit({"ok": False, "error": str(e)})
+
+
+class UpdateDownloader(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(dict)
+    def __init__(self, zip_url):
+        super().__init__()
+        self.zip_url = zip_url
+    def run(self):
+        try:
+            req = Request(self.zip_url, headers={"User-Agent": "VEXARCHIVE"})
+            resp = urlopen(req, timeout=30)
+            total = int(resp.headers.get("Content-Length", 0))
+            data = bytearray()
+            chunk_size = 65536
+            while True:
+                chunk = resp.read(chunk_size)
+                if not chunk: break
+                data.extend(chunk)
+                if total:
+                    self.progress.emit(int(len(data) / total * 100))
+            self.finished.emit({"ok": True, "data": bytes(data)})
+        except Exception as e:
+            self.finished.emit({"ok": False, "error": str(e)})
+
+
+# ── PARTICLES CANVAS ──
+
+class ParticlesWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._particles = []
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        for _ in range(40):
+            self._particles.append({
+                "x": random.random(), "y": random.random(),
+                "vx": (random.random() - 0.5) * 0.002,
+                "vy": (random.random() - 0.5) * 0.002,
+                "r": random.uniform(1, 2.5),
+                "a": random.uniform(0.1, 0.4),
+            })
+        self._timer.start(50)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    def _tick(self):
+        for p in self._particles:
+            p["x"] += p["vx"]; p["y"] += p["vy"]
+            if p["x"] < 0 or p["x"] > 1: p["vx"] *= -1
+            if p["y"] < 0 or p["y"] > 1: p["vy"] *= -1
+        self.update()
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        for pt in self._particles:
+            color = QColor(PINK) if random.random() > 0.5 else QColor(GREEN)
+            color.setAlphaF(pt["a"])
+            p.setBrush(QBrush(color))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(pt["x"] * w, pt["y"] * h), pt["r"], pt["r"])
+
+
+# ── MAIN WINDOW ──
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"VEXARCHIVE v{VERSION}")
+        self.resize(1100, 720)
+        self._setup_ui()
+        # drag drop
+        self.setAcceptDrops(True)
+        # files for packing
+        self._pack_files = []
+        self._log_lines = []
+        self._log("VEXARCHIVE v{} uruchomiony".format(VERSION))
+
+    def _setup_ui(self):
+        cw = QWidget()
+        self.setCentralWidget(cw)
+        cw.setStyleSheet(f"background: {BG_DARK}; font-family: {FONT_MAIN}; color: {TEXT};")
+
+        # particles
+        self._particles = ParticlesWidget(cw)
+        self._particles.resize(self.width(), self.height())
+
+        # header
+        hdr = QWidget()
+        hdr.setFixedHeight(50)
+        hdr.setStyleSheet("background: rgba(255,255,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.06);")
+        hl = QHBoxLayout(hdr); hl.setContentsMargins(16, 0, 16, 0)
+        title = QLabel(f"VEXARCHIVE")
+        title.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {PINK}; background: transparent; border: none;")
+        hl.addWidget(title)
+        ver = QLabel(f"v{VERSION}")
+        ver.setStyleSheet(f"font-size: 10px; color: {TEXT_DIM}; padding-top: 14px; background: transparent; border: none;")
+        hl.addWidget(ver)
+        hl.addStretch()
+        self._update_btn = QPushButton("⬇ Sprawdz aktualizacje")
+        self._update_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._update_btn.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {GREEN}; border: 1px solid {GREEN}; border-radius: 4px; padding: 4px 12px; font-size: 11px; }}
+            QPushButton:hover {{ background: rgba(0,255,163,0.1); }}
+            QPushButton:disabled {{ color: #2a2d3a; border-color: #2a2d3a; }}
+        """)
+        self._update_btn.clicked.connect(self._check_updates)
+        hl.addWidget(self._update_btn)
+
+        # tabs
+        self._tabs = QTabWidget()
+        self._tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ background: transparent; border: none; }}
+            QTabBar::tab {{ background: transparent; color: {TEXT_DIM}; border: none; padding: 10px 18px; font-size: 12px; font-weight: bold; }}
+            QTabBar::tab:selected {{ color: {PINK}; border-bottom: 2px solid {PINK}; }}
+            QTabBar::tab:hover {{ color: {TEXT}; }}
+        """)
+        self._tabs.addTab(self._build_pack_tab(), "Pakowanie")
+        self._tabs.addTab(self._build_unpack_tab(), "Rozpakowanie")
+        self._tabs.addTab(self._build_preview_tab(), "Podglad")
+        self._tabs.addTab(self._build_repair_tab(), "Naprawa")
+        self._tabs.addTab(self._build_compare_tab(), "Porownanie")
+        self._tabs.addTab(self._build_log_tab(), "Log")
+
+        # layout
+        lo = QVBoxLayout(cw); lo.setContentsMargins(0, 0, 0, 0); lo.setSpacing(0)
+        lo.addWidget(hdr)
+        lo.addWidget(self._tabs, 1)
+
+    # ── TAB: PACK ──
+    def _build_pack_tab(self):
+        w = QWidget(); lo = QHBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+
+        # left: file list
+        left = _make_card()
+        ll = QVBoxLayout(left); ll.setContentsMargins(12, 12, 12, 12)
+        ll.addWidget(_lbl("Pliki do spakowania:", TEXT, 13))
+        self._pack_tree = QTreeWidget()
+        self._pack_tree.setHeaderLabels(["Nazwa", "Rozmiar"])
+        self._pack_tree.setColumnWidth(0, 250)
+        self._pack_tree.setStyleSheet(f"""
+            QTreeWidget {{ background: rgba(0,0,0,0.3); border: {BORDER}; border-radius: 4px; color: {TEXT}; font-size: 12px; }}
+            QTreeWidget::item {{ padding: 4px; }}
+            QHeaderView::section {{ background: rgba(255,255,255,0.05); color: {TEXT_DIM}; border: none; padding: 4px; }}
+        """)
+        self._pack_tree.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        ll.addWidget(self._pack_tree, 1)
+        btn_row = QHBoxLayout()
+        self._add_files_btn = QPushButton("+ Dodaj pliki")
+        self._add_files_btn.clicked.connect(self._add_pack_files)
+        self._add_folder_btn = QPushButton("+ Dodaj folder")
+        self._add_folder_btn.clicked.connect(self._add_pack_folder)
+        self._clear_btn = QPushButton("Wyczysc")
+        self._clear_btn.clicked.connect(lambda: (self._pack_tree.clear(), self._pack_files.clear()))
+        for b in (self._add_files_btn, self._add_folder_btn, self._clear_btn):
+            b.setStyleSheet(f"""
+                QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT}; border: {BORDER}; border-radius: 4px; padding: 5px 12px; font-size: 11px; }}
+                QPushButton:hover {{ background: rgba(255,255,255,0.1); }}
+            """)
+        btn_row.addWidget(self._add_files_btn); btn_row.addWidget(self._add_folder_btn); btn_row.addStretch(); btn_row.addWidget(self._clear_btn)
+        ll.addLayout(btn_row)
+
+        # right: options
+        right = QWidget()
+        rl = QVBoxLayout(right); rl.setContentsMargins(12, 0, 0, 0)
+
+        opt_card = _make_card()
+        ol = QVBoxLayout(opt_card); ol.setContentsMargins(16, 16, 16, 16)
+        ol.addWidget(_lbl("Opcje pakowania:", PINK, 14))
+
+        # format
+        fmt_row = QHBoxLayout()
+        fmt_row.addWidget(_lbl("Format:"))
+        self._pack_fmt = QComboBox()
+        self._pack_fmt.addItems(list(ARCHIVERS.keys()))
+        self._pack_fmt.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        fmt_row.addWidget(self._pack_fmt); fmt_row.addStretch()
+        ol.addLayout(fmt_row)
+
+        # compression level
+        lvl_row = QHBoxLayout()
+        lvl_row.addWidget(_lbl("Poziom kompresji:"))
+        ol.addLayout(lvl_row)
+        slider_row = QHBoxLayout()
+        self._pack_level = QSlider(Qt.Orientation.Horizontal)
+        self._pack_level.setRange(1, 10)
+        self._pack_level.setValue(5)
+        self._pack_level.setFixedWidth(200)
+        self._pack_level.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ height: 4px; background: #2a2d3a; border-radius: 2px; }}
+            QSlider::handle:horizontal {{ background: {PINK}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
+            QSlider::sub-page:horizontal {{ background: {PINK}; border-radius: 2px; }}
+        """)
+        self._level_label = _lbl("5 (Sredni)", TEXT, 12)
+        self._pack_level.valueChanged.connect(lambda v: self._level_label.setText(f"{v} {'(Szybki)' if v<=3 else '(Sredni)' if v<=7 else '(Max)'}"))
+        slider_row.addWidget(self._pack_level); slider_row.addWidget(self._level_label); slider_row.addStretch()
+        ol.addLayout(slider_row)
+
+        # password
+        pw_row = QHBoxLayout()
+        pw_row.addWidget(_lbl("Haslo (AES-256):"))
+        self._pack_password = QLineEdit()
+        self._pack_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._pack_password.setPlaceholderText("opcjonalne")
+        self._pack_password.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        pw_row.addWidget(self._pack_password, 1)
+        ol.addLayout(pw_row)
+
+        # CRC
+        self._pack_crc = QCheckBox("Dodaj CRC32")
+        self._pack_crc.setChecked(True)
+        self._pack_crc.setStyleSheet(f"color: {TEXT}; font-size: 12px;")
+        ol.addWidget(self._pack_crc)
+
+        ol.addStretch()
+
+        # pack button
+        self._pack_btn = _make_btn("SPAKUJ", PINK)
+        self._pack_btn.clicked.connect(self._do_pack)
+        ol.addWidget(self._pack_btn)
+
+        rl.addWidget(opt_card)
+        rl.addStretch()
+
+        lo.addWidget(left, 2)
+        lo.addWidget(right, 1)
+        return w
+
+    def _add_pack_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Wybierz pliki")
+        for fp in files:
+            self._add_pack_file(fp)
+    def _add_pack_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Wybierz folder")
+        if folder:
+            for root, dirs, fnames in os.walk(folder):
+                for fn in fnames:
+                    fp = os.path.join(root, fn)
+                    rel = os.path.relpath(fp, os.path.dirname(folder))
+                    self._add_pack_file(fp, rel)
+    def _add_pack_file(self, fp, name=None):
+        if fp in self._pack_files: return
+        self._pack_files.append(fp)
+        sz = os.path.getsize(fp)
+        item = QTreeWidgetItem([name or os.path.basename(fp), _fmt_size(sz)])
+        item.setData(0, Qt.ItemDataRole.UserRole, fp)
+        self._pack_tree.addTopLevelItem(item)
+
+    def _do_pack(self):
+        if not self._pack_files:
+            QMessageBox.warning(self, "Blad", "Nie wybrano plikow.")
+            return
+        fmt = self._pack_fmt.currentText()
+        arch = ARCHIVERS[fmt]
+        out_path, _ = QFileDialog.getSaveFileName(self, "Zapisz archiwum", f"archiwum{arch['ext']}", f"{arch['desc']} (*{arch['ext']})")
+        if not out_path: return
+        pw = self._pack_password.text().strip() or None
+        level = self._pack_level.value()
+        use_crc = self._pack_crc.isChecked()
+        self._log(f"Pakowanie {len(self._pack_files)} plikow ({fmt}, poziom {level})...")
+        self._particles._timer.setInterval(30)
+        try:
+            files_data = []
+            for fp in self._pack_files:
+                with open(fp, "rb") as f:
+                    files_data.append((os.path.basename(fp), f.read()))
+            arch["cls"].pack(files_data, out_path, password=pw, use_crc=use_crc, compression_level=level)
+            QMessageBox.information(self, "Gotowe", f"Archiwum utworzone:\n{out_path}")
+            self._log(f"OK: {out_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Blad", f"Nie udalo sie spakowac:\n{e}")
+            self._log(f"BLAD: {e}")
+        finally:
+            self._particles._timer.setInterval(50)
+
+    # ── TAB: UNPACK ──
+    def _build_unpack_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+
+        card = _make_card()
+        cl = QVBoxLayout(card); cl.setContentsMargins(20, 20, 20, 20)
+        cl.addWidget(_lbl("Rozpakowywanie archiwum:", PINK, 14))
+
+        ar = QHBoxLayout()
+        ar.addWidget(_lbl("Archiwum:"))
+        self._unpack_path = QLineEdit()
+        self._unpack_path.setReadOnly(True)
+        self._unpack_path.setPlaceholderText("Wybierz plik .cmp lub .vh")
+        self._unpack_path.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 6px; border-radius: 4px;")
+        ar.addWidget(self._unpack_path, 1)
+        self._unpack_browse = QPushButton("Przegladaj")
+        self._unpack_browse.setStyleSheet(f"QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT}; border: {BORDER}; border-radius: 4px; padding: 6px 14px; }} QPushButton:hover {{ background: rgba(255,255,255,0.1); }}")
+        self._unpack_browse.clicked.connect(self._browse_unpack)
+        ar.addWidget(self._unpack_browse)
+        cl.addLayout(ar)
+
+        dr = QHBoxLayout()
+        dr.addWidget(_lbl("Katalog wyjsciowy:"))
+        self._unpack_out = QLineEdit()
+        self._unpack_out.setReadOnly(True)
+        self._unpack_out.setPlaceholderText("Wybierz gdzie wypakowac")
+        self._unpack_out.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 6px; border-radius: 4px;")
+        dr.addWidget(self._unpack_out, 1)
+        self._unpack_out_btn = QPushButton("Wybierz")
+        self._unpack_out_btn.setStyleSheet(self._unpack_browse.styleSheet())
+        self._unpack_out_btn.clicked.connect(lambda: self._unpack_out.setText(QFileDialog.getExistingDirectory(self, "Katalog wyjsciowy") or self._unpack_out.text()))
+        dr.addWidget(self._unpack_out_btn)
+        cl.addLayout(dr)
+
+        pwr = QHBoxLayout()
+        pwr.addWidget(_lbl("Haslo (jesli zaszyfrowane):"))
+        self._unpack_password = QLineEdit()
+        self._unpack_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._unpack_password.setPlaceholderText("opcjonalne")
+        self._unpack_password.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        pwr.addWidget(self._unpack_password, 1)
+        cl.addLayout(pwr)
+
+        self._unpack_skip_crc = QCheckBox("Pomin bledy CRC (odzyskiwanie)")
+        self._unpack_skip_crc.setStyleSheet(f"color: {TEXT}; font-size: 12px;")
+        cl.addWidget(self._unpack_skip_crc)
+
+        cl.addStretch()
+        self._unpack_btn = _make_btn("ROZPAKUJ", GREEN)
+        self._unpack_btn.clicked.connect(self._do_unpack)
+        cl.addWidget(self._unpack_btn)
+        lo.addWidget(card)
+        lo.addStretch()
+        return w
+
+    def _browse_unpack(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Wybierz archiwum", "", "Archiwa VEXARCHIVE (*.cmp *.vh);;Wszystkie (*)")
+        if path:
+            self._unpack_path.setText(path)
+
+    def _do_unpack(self):
+        path = self._unpack_path.text()
+        out = self._unpack_out.text()
+        if not path or not os.path.isfile(path):
+            QMessageBox.warning(self, "Blad", "Wybierz archiwum.")
+            return
+        if not out:
+            out = os.path.join(os.path.dirname(path), "wypakowane")
+        pw = self._unpack_password.text().strip() or None
+        skip_crc = self._unpack_skip_crc.isChecked()
+        self._log(f"Rozpakowywanie {path}...")
+        try:
+            # detect format
+            with open(path, "rb") as f:
+                magic = f.read(4)
+            if magic in (CMPArchive.V2_MAGIC, CMPCompressor.MAGIC):
+                ArchCls = CMPArchive
+                name = "CMP"
+            elif magic in (VHArchive.V2_MAGIC, VHCompressor.MAGIC):
+                ArchCls = VHArchive
+                name = "VH"
+            else:
+                QMessageBox.warning(self, "Blad", "Nieznany format archiwum")
+                return
+            files = ArchCls.unpack(path, out, password=pw, skip_crc=skip_crc)
+            if files is None:
+                QMessageBox.warning(self, "Blad", "Nie mozna odczytac archiwum (zle haslo? uszkodzone?)")
+                return
+            QMessageBox.information(self, "Gotowe", f"Wypakowano {len(files)} plikow do:\n{out}")
+            self._log(f"OK: wypakowano {len(files)} plikow ({name})")
+        except Exception as e:
+            QMessageBox.critical(self, "Blad", str(e))
+            self._log(f"BLAD: {e}")
+
+    # ── TAB: PREVIEW ──
+    def _build_preview_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+
+        # top bar
+        top = QHBoxLayout()
+        top.addWidget(_lbl("Archiwum:"))
+        self._preview_path = QLineEdit()
+        self._preview_path.setReadOnly(True)
+        self._preview_path.setPlaceholderText("Wybierz .cmp lub .vh")
+        self._preview_path.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 6px; border-radius: 4px;")
+        top.addWidget(self._preview_path, 1)
+        self._preview_browse = QPushButton("Przegladaj")
+        self._preview_browse.setStyleSheet(f"QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT}; border: {BORDER}; border-radius: 4px; padding: 6px 14px; }} QPushButton:hover {{ background: rgba(255,255,255,0.1); }}")
+        self._preview_browse.clicked.connect(lambda: self._load_preview(True))
+        top.addWidget(self._preview_browse)
+        # password
+        self._preview_password = QLineEdit()
+        self._preview_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._preview_password.setPlaceholderText("haslo")
+        self._preview_password.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px; max-width: 120px;")
+        self._preview_password.returnPressed.connect(lambda: self._load_preview(False))
+        top.addWidget(self._preview_password)
+        lo.addLayout(top)
+
+        # search
+        sr = QHBoxLayout()
+        sr.addWidget(_lbl("Szukaj:"))
+        self._preview_search = QLineEdit()
+        self._preview_search.setPlaceholderText("filtruj pliki...")
+        self._preview_search.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        self._preview_search.textChanged.connect(self._filter_preview)
+        sr.addWidget(self._preview_search, 1)
+        self._preview_info = _lbl("", TEXT_DIM, 11)
+        sr.addWidget(self._preview_info)
+        lo.addLayout(sr)
+
+        self._preview_tree = QTreeWidget()
+        self._preview_tree.setHeaderLabels(["Nazwa", "Originalny", "Skompresowany", "Ratio", "CRC", "Szyfr"])
+        self._preview_tree.setColumnWidth(0, 280)
+        self._preview_tree.setStyleSheet(f"""
+            QTreeWidget {{ background: rgba(0,0,0,0.3); border: {BORDER}; border-radius: 4px; color: {TEXT}; font-size: 12px; }}
+            QTreeWidget::item {{ padding: 3px; }}
+            QHeaderView::section {{ background: rgba(255,255,255,0.05); color: {TEXT_DIM}; border: none; padding: 4px; }}
+        """)
+        lo.addWidget(self._preview_tree, 1)
+        return w
+
+    def _load_preview(self, browse=True):
+        if browse:
+            path, _ = QFileDialog.getOpenFileName(self, "Wybierz archiwum", "", "Archiwa VEXARCHIVE (*.cmp *.vh);;Wszystkie (*)")
+            if not path: return
+            self._preview_path.setText(path)
+        path = self._preview_path.text()
+        if not path or not os.path.isfile(path): return
+        pw = self._preview_password.text().strip() or None
+        self._preview_tree.clear()
+        try:
+            with open(path, "rb") as f:
+                magic = f.read(4)
+            if magic in (CMPArchive.V2_MAGIC, CMPCompressor.MAGIC):
+                ArchCls = CMPArchive
+            elif magic in (VHArchive.V2_MAGIC, VHCompressor.MAGIC):
+                ArchCls = VHArchive
+            else:
+                QMessageBox.warning(self, "Blad", "Nieznany format")
+                return
+            files = ArchCls.list_files(path, password=pw)
+            if files is None:
+                QMessageBox.warning(self, "Blad", "Nie mozna odczytac (zle haslo?)")
+                return
+            total_orig = 0; total_comp = 0
+            for name, orig, comp, has_crc, is_enc, crc_val in files:
+                ratio = f"{comp/orig*100:.1f}%" if orig else "-"
+                crc_str = f"{crc_val:08X}" if has_crc else "-"
+                enc_str = "AES-256" if is_enc else "Nie"
+                item = QTreeWidgetItem([name, _fmt_size(orig), _fmt_size(comp), ratio, crc_str, enc_str])
+                if ratio != "-":
+                    r = comp/orig
+                    if r < 0.5: item.setForeground(3, QBrush(QColor(GREEN)))
+                    elif r > 0.9: item.setForeground(3, QBrush(QColor("#ff6b6b")))
+                self._preview_tree.addTopLevelItem(item)
+                total_orig += orig; total_comp += comp
+            self._preview_info.setText(f"{len(files)} plikow, {_fmt_size(total_orig)} -> {_fmt_size(total_comp)} ({total_comp/total_orig*100:.1f}%)")
+        except Exception as e:
+            QMessageBox.warning(self, "Blad", str(e))
+
+    def _filter_preview(self, text):
+        text = text.lower()
+        for i in range(self._preview_tree.topLevelItemCount()):
+            item = self._preview_tree.topLevelItem(i)
+            item.setHidden(text not in item.text(0).lower())
+
+    # ── TAB: REPAIR ──
+    def _build_repair_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+        card = _make_card()
+        cl = QVBoxLayout(card); cl.setContentsMargins(20, 20, 20, 20)
+        cl.addWidget(_lbl("Naprawa uszkodzonego archiwum:", PINK, 14))
+        cl.addWidget(_lbl("Proba odzyskania danych z archiwow z blednym CRC lub uszkodzona struktura.", TEXT_DIM, 11))
+
+        ar = QHBoxLayout()
+        ar.addWidget(_lbl("Uszkodzone archiwum:"))
+        self._repair_in = QLineEdit()
+        self._repair_in.setReadOnly(True); self._repair_in.setPlaceholderText("Wybierz .cmp lub .vh")
+        self._repair_in.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 6px; border-radius: 4px;")
+        ar.addWidget(self._repair_in, 1)
+        b = QPushButton("Przegladaj")
+        b.setStyleSheet(f"QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT}; border: {BORDER}; border-radius: 4px; padding: 6px 14px; }} QPushButton:hover {{ background: rgba(255,255,255,0.1); }}")
+        b.clicked.connect(lambda: self._repair_in.setText(QFileDialog.getOpenFileName(self, "Wybierz archiwum", "", "Archiwa (*.cmp *.vh)")[0] or self._repair_in.text()))
+        ar.addWidget(b)
+        cl.addLayout(ar)
+
+        ar2 = QHBoxLayout()
+        ar2.addWidget(_lbl("Zapisz jako:"))
+        self._repair_out = QLineEdit()
+        self._repair_out.setPlaceholderText("np. naprawione.cmp")
+        self._repair_out.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 6px; border-radius: 4px;")
+        ar2.addWidget(self._repair_out, 1)
+        b2 = QPushButton("...")
+        b2.setStyleSheet(b.styleSheet())
+        b2.clicked.connect(lambda: self._repair_out.setText(QFileDialog.getSaveFileName(self, "Zapisz jako", "naprawione.cmp", "Archiwa (*.cmp *.vh)")[0] or self._repair_out.text()))
+        ar2.addWidget(b2)
+        cl.addLayout(ar2)
+
+        pwr = QHBoxLayout()
+        pwr.addWidget(_lbl("Haslo:"))
+        self._repair_password = QLineEdit()
+        self._repair_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self._repair_password.setPlaceholderText("opcjonalne")
+        self._repair_password.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; padding: 4px 8px; border-radius: 4px;")
+        pwr.addWidget(self._repair_password, 1)
+        cl.addLayout(pwr)
+
+        self._repair_btn = _make_btn("NAPRAW", "#ff6b6b")
+        self._repair_btn.clicked.connect(self._do_repair)
+        cl.addWidget(self._repair_btn)
+
+        # results
+        self._repair_result = QTextEdit()
+        self._repair_result.setReadOnly(True)
+        self._repair_result.setStyleSheet(f"background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; border-radius: 4px; font-size: 11px; padding: 8px; font-family: Consolas, monospace;")
+        self._repair_result.setMaximumHeight(200)
+        cl.addWidget(self._repair_result)
+
+        lo.addWidget(card)
+        return w
+
+    def _do_repair(self):
+        inp = self._repair_in.text()
+        out = self._repair_out.text()
+        if not inp or not os.path.isfile(inp):
+            QMessageBox.warning(self, "Blad", "Wybierz uszkodzone archiwum.")
+            return
+        if not out:
+            base, ext = os.path.splitext(inp)
+            out = base + "_repaired" + ext
+            self._repair_out.setText(out)
+        pw = self._repair_password.text().strip() or None
+        self._log(f"Naprawa {inp}...")
+        try:
+            from repair import repair_archive
+            r = repair_archive(inp, out, password=pw)
+            txt = f"--- Wynik naprawy ---\n"
+            txt += f"Razem: {r['total']}\n"
+            txt += f"Odzyskane: {r['recovered']}\n"
+            txt += f"Utracone: {r['lost']}\n"
+            if r['errors']:
+                txt += f"\nBledy ({len(r['errors'])}):\n"
+                for e in r['errors'][:50]:
+                    txt += f"  - {e}\n"
+            if r['recovered'] > 0:
+                txt += f"\nZapisano odzyskane pliki do: {out}\n"
+            self._repair_result.setText(txt)
+            self._log(f"Naprawa: {r['recovered']}/{r['total']} odzyskanych")
+        except Exception as e:
+            QMessageBox.critical(self, "Blad", str(e))
+            self._log(f"BLAD naprawy: {e}")
+
+    # ── TAB: COMPARE ──
+    def _build_compare_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+        lo.addWidget(_lbl("Porownanie CMP vs VH", PINK, 14))
+        lo.addWidget(_lbl("Wybierz pliki i skompresuj oboma formatami, aby porownac.", TEXT_DIM, 11))
+
+        cf = _make_card()
+        cl = QVBoxLayout(cf); cl.setContentsMargins(16, 16, 16, 16)
+        ar = QHBoxLayout()
+        ar.addWidget(_lbl("Pliki do testu:"))
+        self._cmp_files_btn = QPushButton("Wybierz pliki")
+        self._cmp_files_btn.setStyleSheet(f"QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT}; border: {BORDER}; border-radius: 4px; padding: 6px 14px; }} QPushButton:hover {{ background: rgba(255,255,255,0.1); }}")
+        self._cmp_files_btn.clicked.connect(self._select_cmp_files)
+        ar.addWidget(self._cmp_files_btn)
+        self._cmp_files_label = _lbl("nie wybrano", TEXT_DIM)
+        ar.addWidget(self._cmp_files_label, 1)
+        cl.addLayout(ar)
+
+        lvl_row = QHBoxLayout()
+        lvl_row.addWidget(_lbl("Poziom:"))
+        self._cmp_level = QSlider(Qt.Orientation.Horizontal)
+        self._cmp_level.setRange(1, 10); self._cmp_level.setValue(5)
+        self._cmp_level.setFixedWidth(150)
+        self._cmp_level.setStyleSheet(self._pack_level.styleSheet())
+        lvl_row.addWidget(self._cmp_level)
+        self._cmp_level_label = _lbl("5")
+        self._cmp_level.valueChanged.connect(lambda v: self._cmp_level_label.setText(str(v)))
+        lvl_row.addWidget(self._cmp_level_label); lvl_row.addStretch()
+        cl.addLayout(lvl_row)
+
+        self._cmp_btn = _make_btn("POROWNAJ", GREEN)
+        self._cmp_btn.clicked.connect(self._do_compare)
+        cl.addWidget(self._cmp_btn)
+        lo.addWidget(cf)
+
+        self._cmp_table = QTableWidget()
+        self._cmp_table.setColumnCount(5)
+        self._cmp_table.setHorizontalHeaderLabels(["Plik", "Original", "CMP", "VH", "Zwyciezca"])
+        self._cmp_table.setStyleSheet(f"""
+            QTableWidget {{ background: rgba(0,0,0,0.3); border: {BORDER}; border-radius: 4px; color: {TEXT}; font-size: 12px; gridline-color: rgba(255,255,255,0.05); }}
+            QHeaderView::section {{ background: rgba(255,255,255,0.05); color: {TEXT_DIM}; border: none; padding: 6px; font-weight: bold; }}
+        """)
+        self._cmp_table.horizontalHeader().setStretchLastSection(True)
+        lo.addWidget(self._cmp_table, 1)
+        return w
+
+    def _select_cmp_files(self):
+        files, _ = QFileDialog.getOpenFileNames(self, "Wybierz pliki do porownania")
+        if files:
+            self._cmp_files = files
+            self._cmp_files_label.setText(f"{len(files)} plikow")
+
+    def _do_compare(self):
+        if not hasattr(self, '_cmp_files') or not self._cmp_files:
+            QMessageBox.warning(self, "Blad", "Wybierz pliki do porownania")
+            return
+        level = self._cmp_level.value()
+        cmp_passes = max(1, level); cmp_pairs = max(8, level * 3)
+        vh_passes = max(1, level); vh_pairs = max(16, level * 5)
+        self._cmp_table.setRowCount(0)
+        cmp_total, vh_total, orig_total = 0, 0, 0
+        cmp_wins, vh_wins = 0, 0
+        for fp in self._cmp_files:
+            with open(fp, "rb") as f:
+                data = f.read()
+            orig_total += len(data)
+            cmp_data = CMPCompressor.compress(data, passes=cmp_passes, num_pairs=cmp_pairs)
+            vh_data = VHCompressor.compress(data, passes=vh_passes, num_pairs=vh_pairs)
+            cmp_total += len(cmp_data); vh_total += len(vh_data)
+            row = self._cmp_table.rowCount()
+            self._cmp_table.insertRow(row)
+            name = os.path.basename(fp)
+            winner = "CMP" if len(cmp_data) < len(vh_data) else "VH" if len(vh_data) < len(cmp_data) else "="
+            if winner == "CMP": cmp_wins += 1
+            elif winner == "VH": vh_wins += 1
+            self._cmp_table.setItem(row, 0, QTableWidgetItem(name))
+            self._cmp_table.setItem(row, 1, QTableWidgetItem(_fmt_size(len(data))))
+            self._cmp_table.setItem(row, 2, QTableWidgetItem(f"{_fmt_size(len(cmp_data))} ({len(cmp_data)/len(data)*100:.1f}%)"))
+            self._cmp_table.setItem(row, 3, QTableWidgetItem(f"{_fmt_size(len(vh_data))} ({len(vh_data)/len(data)*100:.1f}%)"))
+            witem = QTableWidgetItem(winner)
+            witem.setForeground(QBrush(QColor(PINK if winner == "CMP" else GREEN if winner == "VH" else TEXT)))
+            self._cmp_table.setItem(row, 4, witem)
+        # summary row
+        row = self._cmp_table.rowCount()
+        self._cmp_table.insertRow(row)
+        self._cmp_table.setItem(row, 0, QTableWidgetItem("RAZEM"))
+        self._cmp_table.setItem(row, 1, QTableWidgetItem(_fmt_size(orig_total)))
+        self._cmp_table.setItem(row, 2, QTableWidgetItem(f"{_fmt_size(cmp_total)} ({cmp_total/orig_total*100:.1f}%)"))
+        self._cmp_table.setItem(row, 3, QTableWidgetItem(f"{_fmt_size(vh_total)} ({vh_total/orig_total*100:.1f}%)"))
+        witem = QTableWidgetItem(f"CMP {cmp_wins}-{vh_wins} VH")
+        witem.setForeground(QBrush(QColor(PINK if cmp_wins > vh_wins else GREEN if vh_wins > cmp_wins else TEXT)))
+        self._cmp_table.setItem(row, 4, witem)
+        self._cmp_table.resizeColumnsToContents()
+        self._log(f"Porownanie: CMP {cmp_total/orig_total*100:.1f}% vs VH {vh_total/orig_total*100:.1f}%")
+
+    # ── TAB: LOG ──
+    def _build_log_tab(self):
+        w = QWidget(); lo = QVBoxLayout(w); lo.setContentsMargins(16, 12, 16, 12)
+        self._log_widget = QTextEdit()
+        self._log_widget.setReadOnly(True)
+        self._log_widget.setStyleSheet(f"""
+            background: rgba(0,0,0,0.3); color: {TEXT}; border: {BORDER}; border-radius: 4px;
+            font-size: 12px; padding: 12px; font-family: Consolas, 'Courier New', monospace;
+        """)
+        lo.addWidget(self._log_widget, 1)
+        clear_btn = QPushButton("Wyczysc log")
+        clear_btn.setStyleSheet(f"QPushButton {{ background: rgba(255,255,255,0.06); color: {TEXT_DIM}; border: {BORDER}; border-radius: 4px; padding: 6px 14px; }} QPushButton:hover {{ color: {TEXT}; }}")
+        clear_btn.clicked.connect(lambda: (self._log_widget.clear(), self._log_lines.clear()))
+        lo.addWidget(clear_btn, 0, Qt.AlignmentFlag.AlignRight)
+        return w
+
+    def _log(self, msg):
+        ts = datetime.now().strftime("%H:%M:%S")
+        line = f"[{ts}] {msg}"
+        self._log_lines.append(line)
+        if hasattr(self, '_log_widget'):
+            self._log_widget.append(line)
+
+    # ── DRAG & DROP ──
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    def dragMoveEvent(self, event):
+        event.acceptProposedAction()
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if os.path.isfile(path):
+                self._add_pack_file(path)
+
+    # ── RESIZE ──
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._particles.resize(self.width(), self.height())
+
+    # ── UPDATE ──
+    def _check_updates(self):
+        self._update_btn.setEnabled(False)
+        self._update_btn.setText("⬇ Sprawdzanie...")
+        self._update_worker = UpdateChecker(GITHUB_REPO)
+        self._update_worker.finished.connect(self._on_update_check)
+        self._update_worker.start()
+
+    def _on_update_check(self, res):
+        self._update_btn.setEnabled(True)
+        if not res.get("ok"):
+            self._update_btn.setText("⬇ Blad")
+            QMessageBox.warning(self, "Blad", f"Nie mozna sprawdzic aktualizacji:\n{res.get('error', '?')}")
+            QTimer.singleShot(3000, lambda: self._update_btn.setText("⬇ Sprawdz aktualizacje"))
+            return
+        tag = res.get("tag", "")
+        if not tag:
+            self._update_btn.setText("⬇ Brak wersji")
+            QMessageBox.information(self, "Aktualizacje", "Brak wydan na GitHub.")
+            QTimer.singleShot(3000, lambda: self._update_btn.setText("⬇ Sprawdz aktualizacje"))
+            return
+        current = VERSION.lstrip("v")
+        latest = tag.lstrip("v")
+        is_newer = self._version_cmp(latest, current) > 0
+        if not is_newer:
+            self._update_btn.setText("✔ Aktualny")
+            QMessageBox.information(self, "Aktualizacje", f"Masz najnowsza wersje ({VERSION}).")
+            QTimer.singleShot(3000, lambda: self._update_btn.setText("⬇ Sprawdz aktualizacje"))
+            return
+        self._update_btn.setText(f"⬇ v{latest} dostepne!")
+        reply = QMessageBox.question(self, "Aktualizacja",
+            f"Dostepna nowa wersja: {tag}\n\n{res.get('body', '')}\n\nPobrac i zainstalowac?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes and res.get("zip_url"):
+            self._download_update(res["zip_url"], tag)
+
+    def _version_cmp(self, a, b):
+        pa = [int(x) for x in a.split(".")]
+        pb = [int(x) for x in b.split(".")]
+        for i in range(max(len(pa), len(pb))):
+            va = pa[i] if i < len(pa) else 0
+            vb = pb[i] if i < len(pb) else 0
+            if va != vb: return va - vb
+        return 0
+
+    def _download_update(self, zip_url, tag):
+        self._update_downloader = UpdateDownloader(zip_url)
+        self._update_downloader.progress.connect(lambda p: self._update_btn.setText(f"⬇ Pobieranie {p}%"))
+        self._update_downloader.finished.connect(lambda r: self._apply_update(r, tag))
+        self._update_downloader.start()
+
+    def _apply_update(self, res, tag):
+        if not res.get("ok"):
+            QMessageBox.critical(self, "Blad", f"Nie udalo sie pobrac aktualizacji:\n{res.get('error', '?')}")
+            self._update_btn.setText("⬇ Sprawdz aktualizacje")
+            return
+        try:
+            z = zipfile.ZipFile(io.BytesIO(res["data"]))
+            base = os.path.dirname(os.path.abspath(sys.argv[0]))
+            for name in z.namelist():
+                parts = name.split("/")
+                if len(parts) > 1: parts = parts[1:]
+                else: continue
+                target = os.path.join(base, *parts)
+                if name.endswith("/"):
+                    os.makedirs(target, exist_ok=True)
+                else:
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    with open(target, "wb") as f:
+                        f.write(z.read(name))
+            QMessageBox.information(self, "OK", f"Zaktualizowano do {tag}. Restart...")
+            subprocess.Popen([sys.executable] + sys.argv)
+            QApplication.quit()
+        except Exception as e:
+            QMessageBox.critical(self, "Blad", f"Nie udalo sie zainstalowac:\n{e}")
+            self._update_btn.setText("⬇ Sprawdz aktualizacje")
+
+
+def _fmt_size(sz):
+    if sz < 1024: return f"{sz} B"
+    elif sz < 1024*1024: return f"{sz/1024:.1f} KB"
+    else: return f"{sz/1024/1024:.1f} MB"
+
+
+def run_gui():
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    w = MainWindow()
+    w.show()
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    run_gui()

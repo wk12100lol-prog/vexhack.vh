@@ -130,15 +130,39 @@ class ArchiveScanner(QThread):
         self._stop = False
     def stop(self):
         self._stop = True
+
+    def _skip_dir(self, dp):
+        skip_prefixes = (r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)", r"C:\ProgramData", r"C:\$Recycle.Bin", r"C:\System Volume Information", r"C:\Users\All Users")
+        return dp.startswith(skip_prefixes)
+
+    def _count_dirs(self):
+        total = 0
+        for drive in self.drives:
+            if self._stop: return total
+            self.progress.emit(-1, f"Zliczam katalogi na {drive}...")
+            for root, dirs, files in os.walk(drive, topdown=True):
+                if self._stop: return total
+                try:
+                    for d in list(dirs):
+                        if self._skip_dir(os.path.join(root, d)):
+                            dirs.remove(d)
+                    total += 1
+                except: pass
+        return total
+
     def run(self):
         exts = (".cmp", ".vh")
         count = 0
+        total_dirs = self._count_dirs()
+        dirs_done = 0
         for drive in self.drives:
             if self._stop: break
-            self.progress.emit(0, f"Skanowanie {drive}...")
             for root, dirs, files in os.walk(drive, topdown=True):
                 if self._stop: break
                 try:
+                    for d in list(dirs):
+                        if self._skip_dir(os.path.join(root, d)):
+                            dirs.remove(d)
                     for f in files:
                         if f.lower().endswith(exts):
                             fp = os.path.join(root, f)
@@ -149,13 +173,11 @@ class ArchiveScanner(QThread):
                                 self.found.emit(fp, sz, fmt, mt)
                                 count += 1
                             except: pass
-                    # avoid deep recursion in system dirs
-                    for d in list(dirs):
-                        dp = os.path.join(root, d)
-                        if dp.startswith((r"C:\Windows", r"C:\Program Files", r"C:\ProgramData", r"C:\$Recycle.Bin", r"C:\System Volume Information")):
-                            dirs.remove(d)
                 except: pass
-                self.progress.emit(50, f"{drive}: {count} archiwow")
+                dirs_done += 1
+                if total_dirs > 0 and dirs_done % 50 == 0:
+                    pct = min(99, int(dirs_done / total_dirs * 100))
+                    self.progress.emit(pct, f"{drive}: {count} znalezionych ({dirs_done}/{total_dirs} katalogow)")
         self.finished.emit(count)
 
 # ── PARTICLES CANVAS ──
@@ -860,6 +882,11 @@ class MainWindow(QMainWindow):
 
     def _on_scan_progress(self, val, msg):
         self._scan_status.setText(msg)
+        if val < 0:
+            self._scan_progress.setRange(0, 0)
+        else:
+            self._scan_progress.setRange(0, 100)
+            self._scan_progress.setValue(val)
 
     def _on_scan_found(self, path, size, fmt, mtime):
         self._scan_found_count += 1
